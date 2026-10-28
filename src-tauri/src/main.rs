@@ -345,11 +345,27 @@ fn config_path() -> PathBuf {
     PathBuf::from(appdata).join("codex-pet").join("pet.json")
 }
 
+/// 读配置。文件不存在或坏掉时，字段级别的默认值要和 `default_config_value()` 一致——
+/// 否则设置界面显示的出厂值和实际行为会对不上（语音开关曾经就是这样不一致的）。
 fn load_config() -> Config {
-    fs::read_to_string(config_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let raw = fs::read_to_string(config_path()).ok();
+    let mut cfg: Config = raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    if cfg.voice.is_none() {
+        cfg.voice = Some(true);
+    }
+    if cfg.scale.is_none() {
+        cfg.scale = Some(1.0);
+    }
+    if cfg.always_on_top.is_none() {
+        cfg.always_on_top = Some(true);
+    }
+    if cfg.chat.is_none() {
+        cfg.chat = Some(default_chat());
+    }
+    cfg
 }
 
 fn default_chat() -> ChatConfig {
@@ -849,7 +865,7 @@ fn pet_ui_state() -> Value {
     serde_json::json!({
         // 语音开关读配置文件而不是内存原子量：前端可能在 setup 之前就来问，
         // 那时 VOICE 还是默认的 false，会显示成「没开语音」
-        "voice": cfg.voice.unwrap_or(false),
+        "voice": cfg.voice.unwrap_or(true),
         "config": config_path().to_string_lossy(),
         "scale": cfg.scale.unwrap_or(1.0),
         "alwaysOnTop": cfg.always_on_top.unwrap_or(true),
@@ -1441,7 +1457,7 @@ fn main() {
             let handle = app.handle().clone();
             // 语音开关、缩放、置顶都跟着配置走
             let cfg = load_config();
-            VOICE.store(cfg.voice.unwrap_or(false), Ordering::Relaxed);
+            VOICE.store(cfg.voice.unwrap_or(true), Ordering::Relaxed);
             // 先按配置把窗口尺寸调好，再贴到右下角，位置才准
             apply_scale(&handle, cfg.scale.unwrap_or(1.0));
             if !cfg.always_on_top.unwrap_or(true) {

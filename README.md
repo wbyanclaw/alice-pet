@@ -2,7 +2,7 @@
 
 Codex CLI 的桌面宠物：只读 `~/.codex/sessions/**/*.jsonl`，把会话事件映射成状态，用 4×4 雪碧播放动画。
 
-素材与 `dsh-workpet-alice` 同源（Mori `alice_half` 雪碧），窗口 320×380（逻辑像素，可缩放 80%–120%）、透明、无边框、置顶、不进任务栏。
+素材与 `dsh-workpet-alice` 同源（Mori `alice_half` 雪碧，MIT 授权），窗口 320×380（逻辑像素，可缩放 80%–120%）、透明、无边框、置顶、不进任务栏。
 
 ## 运行
 
@@ -27,6 +27,54 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 默认监听 `%USERPROFILE%\.codex\sessions`——也就是你自己 CLI 会话的日志，不是生图服务那份沙箱副本。
 
 窗口内任意位置按住拖动；单击角色会播 `done` 姿势 1.6 秒。拖拽依赖 `capabilities/default.json` 里的 `core:window:allow-start-dragging`，删掉它窗口就拖不动了。
+
+### 第一次跑需要知道的两件事
+
+1. **配置文件不在仓库里**。首次运行会在 `%APPDATA%\codex-pet\pet.json` 自动生成一份默认配置，
+   界面里的「恢复默认」也是往这个文件写。想换位置就设 `PET_CONFIG` 环境变量。
+2. **语音朗读默认开着**，走云端 MiniMax TTS，需要系统环境变量里有 `MINIMAX_API_KEY`：
+
+```powershell
+setx MINIMAX_API_KEY "sk-cp-..."
+```
+
+拿不到 key 也不会崩——自动回退本地 SAPI，而没装中文语音包的 Windows 读中文不出声（会静默跳过）。
+
+## 接自己的 agent（3 分钟）
+
+```powershell
+git clone https://github.com/wbyanclaw/codex-pet.git
+cd codex-pet
+.\clients\register-mcp.ps1 -Client codex        # 也可用 claude / codebuddy / dsh / trae / all
+```
+
+脚本会编译 release 版、把 `clients/*.mcp.json` 里的 `${CODEX_PET_EXE}` 占位符换成
+你机器上的真实路径，然后写进对应 agent 的用户级配置。
+
+`-Client` 可选值：`codex`、`codex-app`、`claude`、`codebuddy`、`dsh`、`trae`、`qwenwork`、`all`。
+
+手动注册也行，把 `clients/generated/<client>.mcp.json` 里的内容贴进你的 agent 配置即可：
+
+```json
+{
+  "mcpServers": {
+    "codex-pet": {
+      "command": "D:\\path\\to\\codex-pet.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+注册完**先启动桌宠**（MCP 子进程只负责转发请求给正在运行的桌宠），
+然后让 agent 调用 `pet_state` 验证连通。
+
+不想用 MCP 也行，直接打 HTTP：
+
+```powershell
+curl -X POST http://127.0.0.1:8765/say -d '{"text":"你好"}'
+```
+
 
 ## 状态映射
 
@@ -206,15 +254,14 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 把 stdout 里能认出的文本逐行显示成气泡（流式追加），跑完再补一次 `done`。
 
 `pet.json` 查找顺序：`PET_CONFIG` 环境变量 → 可执行文件同目录 → `%APPDATA%\codex-pet\pet.json`。
-默认内容（`pet.json` 已放在仓库根目录和 `%APPDATA%\codex-pet\`）：
+**这个文件不在仓库里**（含本机绝对路径，被 `.gitignore` 排除），首次运行自动生成一份默认配置：
 
 ```json
 {
   "port": 8765,
   "chat": {
-    "command": ["C:\\Users\\yan\\AppData\\Local\\OpenAI\\Codex\\bin\\8925276705115dea\\codex.exe",
-                "exec", "--json", "--skip-git-repo-check", "{prompt}"],
-    "cwd": "d:\\POC\\chatbot"
+    "command": ["codex", "exec", "--json", "--skip-git-repo-check", "{prompt}"],
+    "cwd": ""
   }
 }
 ```
@@ -238,10 +285,16 @@ Codex 这类“每次起一个进程”的 agent，一问一答实测 38–64 �
 同一个 exe 加 `--mcp` 就是标准 MCP server（stdio JSON-RPC）：不建窗口、不占端口。
 在 agent 里注册一次，之后它自己会把桌宠当工具调用。
 
-Codex：
+最快的方式是跑注册脚本（自动编译 + 填路径 + 写配置）：
 
 ```powershell
-codex mcp add codex-pet -- "d:\POC\chatbot\work\codex-pet\src-tauri\target\release\codex-pet.exe" --mcp
+.\clients\register-mcp.ps1 -Client all
+```
+
+手动注册的话，Codex：
+
+```powershell
+codex mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 ```
 
 Codex 默认不放行 MCP 工具调用，会报
@@ -250,7 +303,7 @@ Codex 默认不放行 MCP 工具调用，会报
 
 ```toml
 [mcp_servers.codex-pet]
-command = 'd:\POC\chatbot\work\codex-pet\src-tauri\target\release\codex-pet.exe'
+command = 'D:\path\to\codex-pet.exe'
 args = ["--mcp"]
 default_tools_approval_mode = "approve"
 ```
@@ -258,7 +311,7 @@ default_tools_approval_mode = "approve"
 Claude Code：
 
 ```powershell
-claude mcp add codex-pet -- "d:\POC\chatbot\work\codex-pet\src-tauri\target\release\codex-pet.exe" --mcp
+claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 ```
 
 暴露四个工具：
@@ -276,22 +329,23 @@ claude mcp add codex-pet -- "d:\POC\chatbot\work\codex-pet\src-tauri\target\rele
 ### 各家 agent 注册对照表
 
 同一个 exe、同一份 `{"command": "<exe>", "args": ["--mcp"]}`，只是各家的配置文件放法不同。
-现成模板在 `clients/`（除 Codex App 用 `plugin/` 的插件三件套）。
+模板在 `clients/`（Codex App 用 `plugin/` 的插件三件套），`${CODEX_PET_EXE}` 是占位符——
+跑 `register-mcp.ps1` 会自动替换成你机器上的真实路径。
 
-| agent | 放哪儿 | 状态 | 审批粒度 |
+| agent | 放哪儿 | 注册方式 | 审批粒度 |
 |---|---|---|---|
-| **Codex App** | `~/.codex/config.toml` 加 `[marketplaces.codex-pet]` + `[plugins."codex-pet@codex-pet"]`，指向 `plugin/` | 已写，重启 App 生效 | 支持逐工具 |
-| **Codex CLI** | `[mcp_servers.codex-pet]` | 已写 | 支持逐工具 |
-| **Claude Code** | `~/.claude.json`（`claude mcp add --scope user`） | 已注册 | `permissions.allow` 白名单 |
-| **CodeBuddy / WorkBuddy** | 用户级 `~/.codebuddy/.mcp.json`；桌面版走 MCP 面板 | 模板 `clients/codebuddy.mcp.json` | 无 |
-| **DSH**（DeepSeek Harness） | Claude 风格 mcp 配置，或装 `dsh-mcp-bridge` | 模板 `clients/dsh.mcp.json` | 无 |
-| **Trae** | MCP 面板 → 添加 → 「原始配置(JSON)」粘贴 | 模板 `clients/trae.mcp.json` | 无 |
-| **千问办公 QwenWork** | 扩展 → 连接器 → + 添加 → 粘贴 JSON / 手动 STDIO | 模板 `clients/qwenwork.mcp.json` | 无 |
+| **Codex App** | `~/.codex/config.toml` 加 `[marketplaces.codex-pet]` + `[plugins."codex-pet@codex-pet"]`，指向 `plugin/` | `-Client codex-app`，重启 App 生效 | 支持逐工具 |
+| **Codex CLI** | `[mcp_servers.codex-pet]` | `-Client codex` | 支持逐工具 |
+| **Claude Code** | `~/.claude.json`（`claude mcp add --scope user`） | `-Client claude` | `permissions.allow` 白名单 |
+| **CodeBuddy / WorkBuddy** | 用户级 `~/.codebuddy/.mcp.json`；桌面版走 MCP 面板 | `-Client codebuddy` | 无 |
+| **DSH**（DeepSeek Harness） | Claude 风格 mcp 配置，或装 `dsh-mcp-bridge` | `-Client dsh` | 无 |
+| **Trae** | MCP 面板 → 添加 → 「原始配置(JSON)」粘贴 | `-Client trae` | 无 |
+| **千问办公 QwenWork** | 扩展 → 连接器 → + 添加 → 粘贴 JSON / 手动 STDIO | `-Client qwenwork`（只生成文件，需手动粘贴） | 无 |
 | **豆包工作** | 插件·技能·伙伴 → 插件 → + 添加 → 新建自定义插件 | 手动填表，无 JSON | 无 |
-| **任意脚本 / CI** | `POST 127.0.0.1:<port>/event` 等 5 个 HTTP 端点 | 见下一节 | — |
+| **任意脚本 / CI** | `POST 127.0.0.1:<port>/event` 等 6 个 HTTP 端点 | 见下一节 | — |
 
 豆包和千问办公的表单字段一样：**传输类型 STDIO**、服务器名称 `codex-pet`、
-运行命令 = `d:\POC\chatbot\work\codex-pet\src-tauri\target\release\codex-pet.exe`、参数 = `--mcp`。
+运行命令 = 你机器上的 `codex-pet.exe` 完整路径、参数 = `--mcp`。
 
 审批策略（目前只有 Codex 和 Claude Code 支持逐工具配）：
 
@@ -346,10 +400,18 @@ ui/style.css           各状态 CSS 动效、气泡/输入框/菜单样式
 ui/sprites/*.png       8 张 1024×1024 4×4 雪碧
 ui/settings.html/js/css 图形设置界面（保存 / 恢复默认 / 试听）
 src-tauri/icons/alice.ico 托盘/窗口图标（alice 头像，16–256 多尺寸）
-pet.json               端口、chat 命令模板、语音开关、tts/asr、缩放、置顶
 plugin/                Codex App 的本地插件市场（marketplace.json + .codex-plugin + .mcp.json）
 clients/*.json         其它 agent 的 MCP 注册模板（Claude/CodeBuddy/DSH/Trae/千问办公）
+clients/register-mcp.ps1 一键注册脚本：编译 + 填路径 + 写各家 agent 配置
 ```
+
+运行期才会出现、不在仓库里的文件：
+
+| 文件 | 位置 | 内容 |
+|---|---|---|
+| `pet.json` | `%APPDATA%\codex-pet\`（或 exe 同目录） | 端口、chat 命令模板、语音开关、tts/asr、缩放、置顶 |
+| `endpoint.json` | `%APPDATA%\codex-pet\` | 桌宠实际监听的端口（MCP 子进程靠它找桌宠） |
+| `codex-pet-tts.ps1` | `%TEMP%` | TTS 辅助脚本（启动时自动生成） |
 
 ## 已知限制
 

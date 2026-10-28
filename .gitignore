@@ -5,3 +5,6 @@ src-tauri/target/
 pet.json
 *.log
 codex-run.*
+
+# register-mcp.ps1 生成的配置：填的是本机 exe 绝对路径，换台机器就没用了
+clients/generated/
