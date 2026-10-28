@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codex-pet": {
+      "command": "d:\\POC\\chatbot\\work\\codex-pet\\src-tauri\\target\\release\\codex-pet.exe",
+      "args": ["--mcp"],
+      "env": {
+        "MINIMAX_API_KEY": "${MINIMAX_API_KEY}"
+      }
+    }
+  }
+}

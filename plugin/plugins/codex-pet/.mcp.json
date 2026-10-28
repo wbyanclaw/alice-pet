@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "codex-pet": {
+      "command": "d:\\POC\\chatbot\\work\\codex-pet\\src-tauri\\target\\release\\codex-pet.exe",
+      "args": ["--mcp"],
+      "enabled": true,
+      "default_tools_approval_mode": "approve",
+      "tools": {
+        "pet_say": {
+          "approval_mode": "prompt"
+        },
+        "pet_speak": {
+          "approval_mode": "prompt"
+        }
+      },
+      "env_vars": ["MINIMAX_API_KEY", "PET_PORT"],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 120
+    }
+  }
+}

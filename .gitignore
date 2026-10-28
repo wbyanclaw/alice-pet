@@ -1,0 +1,7 @@
+# Rust 构建产物（约 3.8 GB，不入库）
+src-tauri/target/
+
+# 本机运行时配置与日志：含本机绝对路径、代理和 Codex 安装位置
+pet.json
+*.log
+codex-run.*

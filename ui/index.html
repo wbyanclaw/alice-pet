@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>codex-pet</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body data-tauri-drag-region>
+    <div id="stage" data-tauri-drag-region>
+      <div id="bubble"></div>
+      <div id="shadow"></div>
+      <div id="ring"></div>
+      <div id="pet" data-tauri-drag-region="false"></div>
+      <div id="composer">
+        <input id="prompt" type="text" placeholder="和 alice 说点什么…" autocomplete="off" />
+      </div>
+      <div id="menu">
+        <div class="item" data-act="listen">
+          <span id="listenLabel">说话</span><span class="mark" id="listenMark"></span>
+        </div>
+        <div class="item" data-act="chat">对话</div>
+        <div class="item" data-act="voice">
+          <span>自动念回复</span><span class="mark" id="voiceMark"></span>
+        </div>
+        <div class="sep"></div>
+        <div class="item" data-act="top">
+          <span>总在最前</span><span class="mark" id="topMark"></span>
+        </div>
+        <div class="item" data-act="scale">
+          <span>大小</span><span class="mark" id="scaleMark">100%</span>
+        </div>
+        <div class="sep"></div>
+        <div class="item" data-act="settings">设置…</div>
+        <div class="item" data-act="state">状态</div>
+        <div class="sep"></div>
+        <div class="item" data-act="hide">隐藏</div>
+        <div class="item danger" data-act="quit">退出</div>
+      </div>
+      <div id="dot" title="alice 还在这儿"></div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

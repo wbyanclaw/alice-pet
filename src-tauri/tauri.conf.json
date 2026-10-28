@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "codex-pet",
+  "version": "0.1.0",
+  "identifier": "com.wbyanclaw.codexpet",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "pet",
+        "title": "codex-pet",
+        "width": 320,
+        "height": 380,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false
+      },
+      {
+        "label": "settings",
+        "title": "alice 设置",
+        "url": "settings.html",
+        "width": 540,
+        "height": 680,
+        "minWidth": 500,
+        "minHeight": 560,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "skipTaskbar": false,
+        "alwaysOnTop": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/alice.ico"
+    ]
+  }
+}

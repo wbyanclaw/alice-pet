@@ -1,0 +1,10 @@
+{
+  "version": "0.1.0",
+  "name": "codex-pet",
+  "mcpServers": "./.mcp.json",
+  "description": "Desktop pet bridge for agents: speech bubble, gesture/state and MiniMax TTS.",
+  "author": {
+    "name": "yan"
+  },
+  "license": "MIT"
+}

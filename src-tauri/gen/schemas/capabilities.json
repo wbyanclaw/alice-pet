@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"拖拽、事件监听与设置窗口的权限（Tauri 2 默认拒绝所有 IPC）","local":true,"windows":["pet","settings"],"permissions":["core:default","core:window:allow-start-dragging","core:window:allow-set-focus","core:window:allow-hide","core:window:allow-show","core:window:allow-close","core:event:allow-listen","core:event:allow-unlisten"]}}
