@@ -12,3 +12,6 @@ tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"
+# 外部命令的输出在 Windows 上默认是 GBK（重定向到管道时 chcp 不管用），
+# 用它把 GBK 正确解成文本。
+encoding_rs = "0.8"

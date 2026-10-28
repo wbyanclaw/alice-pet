@@ -13,19 +13,48 @@
 
     <main>
       <section>
+        <h2>快速上手</h2>
+        <p class="hint" style="margin-top: 0">
+          桌宠默认就能用：监听 Codex 会话日志、播放动画、接受点击对话。
+          想让它开口说话，在下面「声音」里选一个语音服务、填上 API key，点「试听」——
+          试听通过后点「保存」即可。
+        </p>
+        <ol class="steps">
+          <li>选语音服务（MiniMax / OpenAI 兼容 / 本机离线都行）</li>
+          <li>填 API key，或留空改用环境变量</li>
+          <li>点「试听」确认能出声 → 点「保存」</li>
+        </ol>
+        <p class="hint">
+          不想折腾云端？选「本机 SAPI」完全离线，但需要系统里装了中文语音包，
+          否则读中文不出声（不会用男声顶替）。
+        </p>
+      </section>
+
+      <section>
         <h2>声音</h2>
         <label class="row check">
           <input type="checkbox" id="voice" />
           <span>自动念回复（回复完成时用语音念出来）</span>
         </label>
         <div class="row">
-          <span class="key">引擎</span>
-          <select id="ttsEngine">
-            <option value="minimax">MiniMax 云端（推荐，中文自然）</option>
-            <option value="sapi">本机 SAPI（离线，需装中文语音包）</option>
-          </select>
+          <span class="key">语音服务</span>
+          <select id="ttsProvider"></select>
         </div>
-        <div class="row">
+        <p class="hint" id="ttsHint"></p>
+
+        <div class="row" data-when="cloud">
+          <span class="key">接口地址</span>
+          <input id="ttsEndpoint" placeholder="https://api.minimaxi.com" />
+        </div>
+        <div class="row" data-when="cloud">
+          <span class="key">请求路径</span>
+          <input id="ttsPath" placeholder="/v1/t2a_v2" />
+        </div>
+        <div class="row" data-when="cloud">
+          <span class="key">模型</span>
+          <input id="ttsModel" placeholder="speech-2.8-turbo" />
+        </div>
+        <div class="row" data-when="cloud">
           <span class="key">音色</span>
           <input id="ttsVoice" list="voiceList" placeholder="female-tianmei" />
           <datalist id="voiceList">
@@ -33,40 +62,104 @@
             <option value="female-shaonv">少女</option>
             <option value="female-yujie">御姐</option>
             <option value="female-chengshu">成熟女性</option>
+            <option value="nova">OpenAI nova</option>
+            <option value="alloy">OpenAI alloy</option>
+            <option value="shimmer">OpenAI shimmer</option>
+            <option value="zh-CN-XiaoxiaoNeural">Azure 晓晓</option>
+            <option value="zh-CN-XiaoyiNeural">Azure 晓伊</option>
           </datalist>
         </div>
-        <div class="row">
-          <span class="key">模型</span>
-          <input id="ttsModel" placeholder="speech-2.8-turbo" />
+        <div class="row" data-when="key">
+          <span class="key">API key</span>
+          <input id="ttsApiKey" type="password" placeholder="留空 = 沿用已保存的 key / 环境变量" autocomplete="off" />
         </div>
-        <div class="row">
-          <span class="key">接口地址</span>
-          <input id="ttsEndpoint" placeholder="https://api.minimaxi.com" />
-        </div>
-        <div class="row">
-          <span class="key">代理</span>
-          <input id="ttsProxy" placeholder="http://127.0.0.1:7890（留空则用系统代理）" />
-        </div>
-        <div class="row">
+        <div class="row" data-when="key">
           <span class="key">key 环境变量</span>
           <input id="ttsKeyEnv" placeholder="MINIMAX_API_KEY" />
         </div>
-        <div class="row">
-          <span class="key">SAPI 音色</span>
+        <div class="row" data-when="cloud">
+          <span class="key">额外请求头</span>
+          <input id="ttsHeaders" placeholder="每行 KEY: VALUE，可留空" />
+        </div>
+        <div class="row" data-when="cloud">
+          <span class="key">音频字段</span>
+          <input id="ttsAudioPath" placeholder="data.audio" />
+        </div>
+        <div class="row" data-when="cloud">
+          <span class="key">音频格式</span>
+          <select id="ttsAudioFormat">
+            <option value="hex">hex（MiniMax）</option>
+            <option value="base64">base64</option>
+            <option value="url">链接（再下载）</option>
+            <option value="binary">二进制（OpenAI 兼容）</option>
+          </select>
+        </div>
+        <div class="row" data-when="cloud">
+          <span class="key">代理</span>
+          <input id="ttsProxy" placeholder="留空直连；需要代理时填 http://127.0.0.1:7890" />
+        </div>
+        <div class="row" data-when="custom">
+          <span class="key">请求体模板</span>
+          <textarea id="ttsBodyTemplate" rows="6" spellcheck="false"
+            placeholder='{"model":"{{model}}","text":"{{text}}","voice":"{{voice}}"}'></textarea>
+        </div>
+        <p class="hint" data-when="custom">
+          模板里用 <code>{{text}}</code> <code>{{model}}</code> <code>{{voice}}</code>
+          <code>{{emotion}}</code> <code>{{speed}}</code> 占位。写成 <code>"{{text}}"</code> 或
+          <code>{{text}}</code> 都行，引号和转义会自动处理。
+        </p>
+        <div class="row" data-when="sapi">
+          <span class="key">本机音色</span>
           <input id="sapiVoice" placeholder="留空自动挑中文女声" />
         </div>
+        <div class="row" data-when="command">
+          <span class="key">命令</span>
+          <input id="ttsCommand" placeholder="edge-tts --voice zh-CN-XiaoxiaoNeural --text {text_file} --write-media {out_file}" />
+        </div>
+        <p class="hint" data-when="command">
+          命令里可用 <code>{text_file}</code> <code>{out_file}</code> <code>{voice}</code> <code>{model}</code> 占位。
+        </p>
+
         <div class="row preview">
           <input id="previewText" placeholder="试听文本" />
           <button id="previewBtn" type="button">试听</button>
         </div>
-        <p class="hint">key 只从环境变量读，不写进配置文件；本机没有女声时 SAPI 会静默跳过，不会用男声顶替。</p>
+        <p class="hint" id="ttsStatus"></p>
       </section>
 
       <section>
         <h2>说话（语音输入）</h2>
         <div class="row">
           <span class="key">识别服务</span>
+          <select id="asrProvider">
+            <option value="whisper">本机 whisper-server（离线）</option>
+            <option value="openai">OpenAI 兼容（云端）</option>
+            <option value="command">外部命令</option>
+          </select>
+        </div>
+        <div class="row" data-asr="http">
+          <span class="key">接口地址</span>
           <input id="asrEndpoint" placeholder="http://127.0.0.1:8080/inference" />
+        </div>
+        <div class="row" data-asr="openai">
+          <span class="key">接口地址</span>
+          <input id="asrApiEndpoint" placeholder="https://api.openai.com/v1/audio/transcriptions" />
+        </div>
+        <div class="row" data-asr="openai">
+          <span class="key">模型</span>
+          <input id="asrModel" placeholder="whisper-1" />
+        </div>
+        <div class="row" data-asr="openai">
+          <span class="key">API key</span>
+          <input id="asrApiKey" type="password" placeholder="留空 = 沿用已保存的 key / 环境变量" autocomplete="off" />
+        </div>
+        <div class="row" data-asr="openai">
+          <span class="key">key 环境变量</span>
+          <input id="asrKeyEnv" placeholder="OPENAI_API_KEY" />
+        </div>
+        <div class="row" data-asr="command">
+          <span class="key">命令</span>
+          <input id="asrCommand" placeholder="whisper-cli -m model.bin -l {language} -f {audio_file}" />
         </div>
         <div class="row">
           <span class="key">ffmpeg</span>
@@ -80,7 +173,10 @@
           <span class="key">麦克风</span>
           <input id="asrDevice" placeholder="留空自动挑第一个录音设备" />
         </div>
-        <p class="hint">录音走本机麦克风，转写交给本机 whisper-server（默认 127.0.0.1:8080），不出网。</p>
+        <p class="hint">
+          默认走本机 whisper-server（127.0.0.1:8080），录音不出网。
+          外部命令里可用 <code>{audio_file}</code> <code>{language}</code> 占位，标准输出即识别结果。
+        </p>
       </section>
 
       <section>

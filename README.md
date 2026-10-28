@@ -32,13 +32,14 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 
 1. **配置文件不在仓库里**。首次运行会在 `%APPDATA%\codex-pet\pet.json` 自动生成一份默认配置，
    界面里的「恢复默认」也是往这个文件写。想换位置就设 `PET_CONFIG` 环境变量。
-2. **语音朗读默认开着**，走云端 MiniMax TTS，需要系统环境变量里有 `MINIMAX_API_KEY`：
+2. **语音朗读默认开着**，默认走云端 MiniMax TTS，需要系统环境变量里有 `MINIMAX_API_KEY`：
 
 ```powershell
 setx MINIMAX_API_KEY "sk-cp-..."
 ```
 
 拿不到 key 也不会崩——自动回退本地 SAPI，而没装中文语音包的 Windows 读中文不出声（会静默跳过）。
+不想用 MiniMax 的话，右键「设置…」→「语音服务」里换成 OpenAI 兼容 / Azure / 本机 SAPI / 外部命令都行。
 
 ## 接自己的 agent（3 分钟）
 
@@ -165,22 +166,34 @@ curl -X POST http://127.0.0.1:8765/say -d '{"text":"你好"}'
 ### 语音输入
 
 右键「说话」开始录音（角色外圈出现蓝色呼吸环），再点一次或点角色本体 = 停止并发送，
-按 `Esc` = 取消。流程：`ffmpeg` 录麦克风 → 本机 `whisper.cpp` server 听写 → 文本直接当消息发出去。
+按 `Esc` = 取消。流程：`ffmpeg` 录麦克风 → 识别服务听写 → 文本直接当消息发出去。
+
+识别服务可切换，在设置窗口的「说话」里选：
+
+| 引擎 | 说明 | 需要什么 |
+|---|---|---|
+| `whisper`（默认） | 本机 `whisper.cpp` server，录音不出网 | 本机跑着 whisper-server |
+| `openai` | OpenAI 兼容的 `/audio/transcriptions`（Groq / 硅基流动 / 火山方舟都行） | 接口地址 + key |
+| `command` | 外部命令，标准输出即识别结果 | 命令里可用 `{audio_file}` `{language}` |
 
 配置在 `pet.json` 的 `asr` 块：
 
 ```json
 "asr": {
-  "endpoint": "http://127.0.0.1:8080/inference", // whisper.cpp server
-  "ffmpeg": "",                                   // 留空自动找：exe 上层目录的 ffmpeg.exe / tools/ffmpeg.exe
+  "provider": "whisper",                            // whisper / openai / command
+  "endpoint": "http://127.0.0.1:8080/inference",    // whisper.cpp server
+  "api_endpoint": "https://api.openai.com/v1/audio/transcriptions", // openai 模式专用
+  "ffmpeg": "",                                     // 留空自动找：exe 上层目录的 ffmpeg.exe / tools/ffmpeg.exe
   "language": "zh",
-  "device": ""                                    // 留空自动取第一个 dshow 录音设备
+  "device": ""                                      // 留空自动取第一个 dshow 录音设备
 }
 ```
 
 `whisper-server` 需要先跑起来（`whisper-server -m ggml-small.bin --language zh -t 8`），
 桌宠自己不会拉起它；服务不通时气泡会直接报错。录音参数固定 16 kHz / 16 bit / 单声道，
 停止时向 ffmpeg stdin 写 `q` 让 WAV 头写完整；不足 3 KB 直接判「录音太短」。
+
+`openai` 模式的 key 优先级和 TTS 一样：设置里填的 > 进程环境变量 > 用户级环境变量。
 
 静音时 whisper 会幻听「謝謝大家」「(字幕:J Chong)」这类字幕客套话，代码里有整句黑名单 +
 括号幻听行过滤，命中的直接当「没听清」丢掉，不会发出去。
@@ -195,55 +208,93 @@ curl -X POST http://127.0.0.1:8765/say -d '{"text":"你好"}'
 - `POST /speak`——外部脚本让它出声（与 `/say` 的区别是只出声、不起气泡）
 
 合成默认走**云端 MiniMax**（系统没装中文语音包也能念中文），失败自动回退本地 SAPI。
+**语音服务不是写死的**，设置窗口的「声音」里选一个预设就能换厂商，选完自动把地址、路径、
+模型、音色、key 环境变量全填好，不相关的字段自动隐藏——不用碰 JSON。
+
+| 预设 | 接口 | 音频 | 备注 |
+|---|---|---|---|
+| `minimax`（默认） | `POST {endpoint}{path}`，`Authorization: Bearer` | hex | 国际站域名；音频 hex 解码后播放 |
+| `openai` | `POST {endpoint}{path}`，`Authorization: Bearer` | 二进制流 | OpenAI 兼容通用：Groq / 硅基流动 / 火山方舟…换接口地址即可 |
+| `azure` | `POST {endpoint}/openai/deployments/{model}/audio/speech` | 二进制流 | 鉴权头是 `api-key`；路径里的 `{model}` 会替换成部署名 |
+| `custom` | 自己写请求体模板 | hex / base64 / 链接 / 二进制 | 模板里用 `{{text}} {{model}} {{voice}} {{emotion}} {{speed}}` 占位 |
+| `sapi` | 无（Windows 自带语音） | — | 完全离线；要系统里装了中文语音包 |
+| `command` | 外部命令（edge-tts / piper…） | — | 命令里可用 `{text_file}` `{out_file}` `{voice}` `{model}` |
+
 配置在 `pet.json` 的 `tts` 块：
 
 ```json
 "tts": {
-  "engine": "minimax",              // minimax（默认）或 sapi
+  "provider": "minimax",            // minimax / openai / azure / custom / sapi / command
   "endpoint": "https://api.minimaxi.com",
+  "path": "/v1/t2a_v2",
   "model": "speech-2.8-turbo",
-  "voice_id": "female-tianmei",     // 甜美温柔女声；想要成熟一点可换 female-yujie / female-chengshu
-  "api_key_env": "MINIMAX_API_KEY", // key 优先从这个环境变量读
-  "proxy": "http://127.0.0.1:7890", // 走代理才通，留空直连
+  "voice": "female-tianmei",        // 甜美温柔女声；想要成熟一点可换 female-yujie / female-chengshu
+  "api_key": "",                    // 直接填 key（优先级最高），留空则读环境变量
+  "api_key_env": "MINIMAX_API_KEY", // 再从这个环境变量读
+  "audio_path": "data.audio",       // 响应里音频字段的点路径，支持数组下标
+  "audio_format": "hex",            // hex / base64 / url / binary
+  "proxy": "http://127.0.0.1:7890",  // 走代理才通，留空直连
   "sapi_voice": ""                  // 回退 SAPI 时指定语音名，留空自动挑中文女声
 }
 ```
+
+**key 的查找顺序**：设置里直接填的 → 进程环境变量 → 用户级环境变量（读 `HKCU\Environment`）。
+所以从开始菜单/IDE 启动拿不到环境变量也没关系，第三档能兜住。
+
+**key 不进命令行也不落盘明文**：HTTP 请求交给 `curl.exe`，鉴权头通过 stdin 用 `curl -K -`
+喂进去——进程列表里看不到，磁盘上也没有明文文件。（顺带一提：curl 并不支持在 header 里展开
+`${VAR}`，四种写法实测都不展开，所以不能靠环境变量占位。）
 
 音色定位是「阳光温柔女声」，所以云端合成带 `emotion: "happy"`；回退本地 SAPI 时按
 「中文女声 → 任意中文 → 任意女声」挑音色，**一个女声都没有就静默跳过**——宁可不出声，
 也不要冒出 `Microsoft David` 那种男声。
 
-**key 不放配置文件**：默认读环境变量 `MINIMAX_API_KEY`（`setx MINIMAX_API_KEY sk-cp-...` 之后重开桌宠）。
-`tts.api_key` 只是环境变量拿不到时的兜底字段，正常情况下留空；key 通过 `PET_TTS_KEY`
-子进程环境变量传给 PowerShell，不会出现在命令行/进程列表里。
+### 自定义模板怎么写
 
-关于 MiniMax 接口本身实测过的坑：
+选「自定义」后，填请求体模板，音频从响应里的哪个字段取也要填（点路径，如 `data.audio`）。
+模板里这几个占位符可用：
+
+| 占位符 | 填进去的东西 |
+|---|---|
+| `{{text}}` | 要念的文本 |
+| `{{model}}` | 模型名 |
+| `{{voice}}` | 音色 |
+| `{{emotion}}` | 情绪（默认 `happy`） |
+| `{{speed}}` | 语速（默认 `1.0`） |
+
+引号怎么写都行：`"text": "{{text}}"` 和 `"text": {{text}}` 都能用，
+引号和转义会自动处理，不用自己转义。
+
+### MiniMax 接口实测过的坑
 
 - 域名用 `https://api.minimaxi.com`（国际站）。`api.minimax.cn` SSL 握手超时。
 - 必须用默认的 hex 音频返回。`output_format:"url"` 返回的阿里云 OSS 链接握手超时，拿不到文件。
 - 接口是 `POST /v1/t2a_v2`，`Authorization: Bearer <key>`，成功判据是 `base_resp.status_code == 0`。
-- 延迟波动很大：稳定时 2–5 秒，偶尔整个请求挂死。脚本默认单次超时 40 秒、失败重试 3 次，
+- 延迟波动很大：稳定时 2–5 秒，偶尔整个请求挂死。默认单次超时 40 秒、失败重试 3 次，
   都失败才退回 SAPI；读 24 字中文约产出 175 KB WAV。
-- hex 解码用 `SoapHexBinary`（3 MB 约 0.5 秒），失败才退回逐字节循环。
 
 回退到本地 SAPI 时**语音包要自己装**：Windows 默认只有英文语音（David / Zira），中文文本会被
 英文引擎直接吞掉——实测 13 个中文字符输出 46 字节 WAV（纯文件头，零音频）。装中文语音的路径：
 设置 → 时间和语言 → 语音 → 添加语音（中文简体）。装完 `Add-Type -AssemblyName System.Speech`
 就能看到 `Microsoft Huihui Desktop` 之类的 zh 语音，代码会自动选中。
 
-实现细节：TTS 走 `powershell -File`（不是 `-Command`——PowerShell 5.1 会把长 `-Command`
-字符串截断，导致 `Speak` 拿到空值并报 `0x20 音频设备错误`），文本经 UTF-8 临时文件传递，
-避开管道编码与引号问题；脚本自身保持纯 ASCII，避免无 BOM 的 UTF-8 `.ps1` 被按 ANSI 解析。
-合成/播放失败会把原因写到 `%TEMP%\codex-pet-tts.err`。
+实现细节：云端合成走 `curl.exe`，本机 SAPI 播放走 `powershell -File`（不是 `-Command`——
+PowerShell 5.1 会把长 `-Command` 字符串截断，导致 `Speak` 拿到空值并报 `0x20 音频设备错误`），
+文本经 UTF-8 临时文件传递，避开管道编码与引号问题。外部命令的输出在 Windows 上默认是
+GBK（重定向到管道时 `chcp` 不生效），代码按 GBK 兜底解码。合成/播放失败会把原因写到
+`%TEMP%\codex-pet-tts.err`。
 
 ## 设置窗口
 
 右键「设置…」（或 `POST /settings`）打开一个独立的图形设置窗口，不用再拿记事本改 `pet.json`。
-分四组：声音（TTS 开关/引擎/音色/模型/接口/代理/key 环境变量 + 试听）、说话（听写服务/ffmpeg/语言/麦克风）、
+分四组：声音（TTS 开关/语音服务预设/音色/模型/接口/代理/key + 试听）、说话（识别引擎/ffmpeg/语言/麦克风）、
 对话（命令每行一个参数、工作目录、环境变量）、其他（端口/大小/总在最前/配置路径）。
 
+- **语音服务**是一个下拉框，选完预设自动把地址、路径、模型、音色、key 环境变量、音频格式
+  全填好；跟这个供应商无关的字段自动藏起来。改任何一项都能试听，**试听不落盘**——
+  改完先听效果，满意了再点保存。
 - **保存**会校验后整份重写 `pet.json`（先写 `.json.tmp` 再 rename），保留文件里未知的键；
-  `tts.api_key` 不会回显到界面，保存时沿用磁盘上的原值。
+  `tts.api_key` / `asr.api_key` 不会回显到界面，保存时留空就沿用磁盘上的原值，填了新值才覆盖。
 - **恢复默认**只回填声音/说话/端口/大小/置顶，**保留对话命令、工作目录和环境变量**——
   否则会把本机 Codex 的绝对路径和代理环境清掉。
 - 语音开关、缩放、置顶保存后立即生效；端口和对话命令要重启桌宠才生效。
@@ -321,7 +372,7 @@ claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 | `pet_say` | 弹气泡对用户说一句话（适合完成提示、需要确认、出错提醒） |
 | `pet_gesture` | 切姿态 `idle/sleeping/thinking/writing/tool/done/error`，可带一行 `detail`；也能只发一次性动作 `gesture`：`nod/shake/lean/cheer/sigh/drowse/startle` |
 | `pet_state` | 读当前姿态与最近一次事件 |
-| `pet_speak` | 让它把这句话念出来（MiniMax 云端 TTS，失败回退 SAPI），与 `pet_say` 的区别是只出声 |
+| `pet_speak` | 让它把这句话念出来（走设置里配的语音服务，失败回退 SAPI），与 `pet_say` 的区别是只出声 |
 
 工具调用会转发给**正在运行的桌宠**，端口从 `%APPDATA%\codex-pet\endpoint.json` 读——
 端口冲突自动顺延（8765→8774），重开桌宠也不用改任何 agent 配置。
@@ -391,14 +442,15 @@ curl -X POST http://127.0.0.1:8765/settings
 ## 结构
 
 ```
-src-tauri/src/main.rs   tail + 状态机 + 本地 HTTP + chat 子进程 + TTS + 语音输入 + 配置读写
+src-tauri/src/main.rs   tail + 状态机 + 本地 HTTP + chat 子进程 + 语音输入 + 配置读写
+src-tauri/src/tts.rs    语音合成：供应商预设表 + 请求拼装 + 音频解码 + 播放
 src-tauri/src/mcp.rs    --mcp 模式的 stdio MCP server（转发给运行中的桌宠）
 src-tauri/tauri.conf.json 主窗口（宠物，320×380 逻辑像素）+ 设置窗口（540×680）
 src-tauri/capabilities/default.json 两个窗口的权限（拖动/隐藏/显示/关闭）
 ui/app.js              状态切图集、气泡、输入框、语音输入、右键菜单
 ui/style.css           各状态 CSS 动效、气泡/输入框/菜单样式
 ui/sprites/*.png       8 张 1024×1024 4×4 雪碧
-ui/settings.html/js/css 图形设置界面（保存 / 恢复默认 / 试听）
+ui/settings.html/js/css 图形设置界面（保存 / 恢复默认 / 试听 / 语音服务预设）
 src-tauri/icons/alice.ico 托盘/窗口图标（alice 头像，16–256 多尺寸）
 plugin/                Codex App 的本地插件市场（marketplace.json + .codex-plugin + .mcp.json）
 clients/*.json         其它 agent 的 MCP 注册模板（Claude/CodeBuddy/DSH/Trae/千问办公）
@@ -411,7 +463,7 @@ clients/register-mcp.ps1 一键注册脚本：编译 + 填路径 + 写各家 age
 |---|---|---|
 | `pet.json` | `%APPDATA%\codex-pet\`（或 exe 同目录） | 端口、chat 命令模板、语音开关、tts/asr、缩放、置顶 |
 | `endpoint.json` | `%APPDATA%\codex-pet\` | 桌宠实际监听的端口（MCP 子进程靠它找桌宠） |
-| `codex-pet-tts.ps1` | `%TEMP%` | TTS 辅助脚本（启动时自动生成） |
+| `codex-pet-play.ps1` / `codex-pet-sapi.ps1` | `%TEMP%` | 播放 / SAPI 朗读的辅助脚本（自动生成） |
 
 ## 已知限制
 
@@ -421,9 +473,10 @@ clients/register-mcp.ps1 一键注册脚本：编译 + 填路径 + 写各家 age
 - 多会话并发时只看**最近修改**的那个 rollout 文件。
 - `/chat` 不做并发限制，连点两次会起两个 agent 进程。
 - 桌宠没运行时 MCP 工具会返回“没找到运行中的桌宠”，不会自动把桌宠拉起来。
-- 云端 TTS 需要 `MINIMAX_API_KEY`；拿不到 key 就只剩本地 SAPI，而本机 SAPI 只有英文语音，
-  中文文本不出声（见上文「语音」）。
-- 语音输入需要本机先跑着 `whisper-server`，桌宠不会自动拉起；服务不通会直接报错。
+- 云端 TTS 需要 key（默认 `MINIMAX_API_KEY`）；拿不到 key 就只剩本地 SAPI，而本机 SAPI 只有英文语音，
+  中文文本不出声（见上文「语音」）。换厂商不用改代码，设置里选预设即可。
+- 语音输入默认需要本机先跑着 `whisper-server`，桌宠不会自动拉起；服务不通会直接报错。
+  也能在设置里换成 OpenAI 兼容转写或外部命令。
 - 静音时 whisper 的幻听靠黑名单过滤，换模型/语言后可能漏网，需要补 `is_asr_hallucination` 的条目。
 
 ## 后续升级（可选）

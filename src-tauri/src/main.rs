@@ -20,6 +20,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 mod mcp;
+mod tts;
 
 const IDLE_AFTER: Duration = Duration::from_secs(45);
 const SLEEP_AFTER: Duration = Duration::from_secs(180);
@@ -277,12 +278,19 @@ struct Config {
     always_on_top: Option<bool>,
 }
 
-/// 语音输入：ffmpeg 录麦克风，交给本机 whisper-server 转文字。
-#[derive(Deserialize, Default)]
+/// 语音输入：ffmpeg 录麦克风，交给识别服务转文字。
+/// 识别服务可切换：whisper.cpp（本地）/ OpenAI 兼容 / 自定义命令。
+#[derive(Deserialize, Default, Clone)]
 struct AsrConfig {
+    /// `whisper`（默认）/ `openai` / `command`
+    #[serde(default)]
+    provider: Option<String>,
     /// whisper.cpp server 的转写地址，默认 http://127.0.0.1:8080/inference
     #[serde(default)]
     endpoint: Option<String>,
+    /// OpenAI 兼容的转写地址，默认 https://api.openai.com/v1/audio/transcriptions
+    #[serde(default)]
+    api_endpoint: Option<String>,
     /// ffmpeg 路径，留空自动找（exe 同目录 / 上层 tools 目录 / PATH）
     #[serde(default)]
     ffmpeg: Option<String>,
@@ -292,33 +300,23 @@ struct AsrConfig {
     /// dshow 录音设备名，留空自动挑第一个麦克风
     #[serde(default)]
     device: Option<String>,
-}
-
-/// 语音合成配置。默认走云端 MiniMax（中文可用），失败回退本地 SAPI。
-#[derive(Deserialize, Default)]
-struct TtsConfig {
-    /// `minimax`（默认）或 `sapi`
-    #[serde(default)]
-    engine: Option<String>,
-    #[serde(default)]
-    endpoint: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    voice_id: Option<String>,
-    /// API key 兜底。优先读环境变量，这里只是环境变量拿不到时的备份
+    /// API key（openai 模式用），也可以走环境变量
     #[serde(default)]
     api_key: Option<String>,
-    /// key 所在的环境变量名，默认 MINIMAX_API_KEY
     #[serde(default)]
     api_key_env: Option<String>,
-    /// 回退到 SAPI 时指定语音名，留空则自动挑中文
+    /// 模型名（openai 模式用）
     #[serde(default)]
-    sapi_voice: Option<String>,
-    /// 走云端 TTS 时的 HTTP 代理，例如 http://127.0.0.1:7890；留空沿用系统代理
+    model: Option<String>,
+    /// 外部命令模式：命令里可用 {audio_file} {language} 占位
+    #[serde(default)]
+    command: Option<String>,
     #[serde(default)]
     proxy: Option<String>,
 }
+
+/// 语音合成配置。供应商可切换，字段全在 tts.rs 里定义。
+type TtsConfig = tts::TtsSettings;
 
 /// 语音朗读开关。跨线程共享，MCP / HTTP / 菜单三条路都读它。
 static VOICE: AtomicBool = AtomicBool::new(false);
@@ -390,16 +388,21 @@ fn default_config_value() -> Value {
             "env": {}
         },
         "tts": {
-            "engine": "minimax",
+            "provider": "minimax",
             "endpoint": "https://api.minimaxi.com",
+            "path": "/v1/t2a_v2",
             "model": "speech-2.8-turbo",
-            "voice_id": "female-tianmei",
+            "voice": "female-tianmei",
             "api_key_env": "MINIMAX_API_KEY",
+            "audio_path": "data.audio",
+            "audio_format": "hex",
             "sapi_voice": "",
             "proxy": ""
         },
         "asr": {
+            "provider": "whisper",
             "endpoint": "http://127.0.0.1:8080/inference",
+            "api_endpoint": "https://api.openai.com/v1/audio/transcriptions",
             "ffmpeg": "",
             "language": "zh",
             "device": ""
@@ -466,167 +469,7 @@ fn emit_bubble(app: &tauri::AppHandle, text: String, done: bool) {
     let _ = app.emit("pet:bubble", Bubble { text, done });
 }
 
-/// TTS 辅助脚本。走 `-File` 而不是 `-Command`：PowerShell 5.1 会把长 `-Command`
-/// 字符串截断，导致脚本拿不到参数（SAPI 那条路会报 0x20 音频设备错误）。
-///
-/// 主路径是 MiniMax 云端合成（系统没装中文语音包也能念中文），失败才回退本地 SAPI。
-/// key 通过环境变量 `PET_TTS_KEY` 传入，不出现在命令行里。
-const TTS_SCRIPT: &str = r#"param(
-  [Parameter(Mandatory=$true)][string]$TextFile,
-  [string]$Engine = "minimax",
-  [string]$Endpoint = "https://api.minimaxi.com",
-  [string]$Model = "speech-2.8-turbo",
-  [string]$VoiceId = "female-shaonv",
-  [int]$TimeoutSec = 40,
-  [string]$SapiVoice = "",
-  [string]$Proxy = ""
-)
-$ErrorActionPreference = "Continue"
-# 必须用 .NET 读取：Get-Content -Raw 返回的字符串带 PS 扩展属性（PSPath 等），
-# ConvertTo-Json 会把它当对象递归展开，请求体从几百字节膨胀到几十 MB，请求必然超时。
-$text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
-if (-not $text -or -not $text.Trim()) { exit 0 }
-
-$errFile = Join-Path $env:TEMP "codex-pet-tts.err"
-
-function Play-Wav([string]$path) {
-  $p = New-Object System.Media.SoundPlayer $path
-  $p.PlaySync()
-  $p.Dispose()
-}
-
-function Get-HexBytes([string]$hex) {
-  try {
-    return ([System.Runtime.Remoting.Metadata.W3cXsd2001.SoapHexBinary]::Parse($hex)).Value
-  } catch {
-    $raw = New-Object byte[] ([int]($hex.Length / 2))
-    for ($i = 0; $i -lt $raw.Length; $i++) {
-      $raw[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
-    }
-    return $raw
-  }
-}
-
-if ($Engine -eq "minimax" -and $env:PET_TTS_KEY) {
-  $payload = @{
-    model = $Model
-    text = $text
-    stream = $false
-    language_boost = "Chinese"
-    voice_setting = @{ voice_id = $VoiceId; speed = 1; vol = 1; pitch = 0; emotion = "happy" }
-    audio_setting = @{ sample_rate = 32000; bitrate = 128000; format = "wav"; channel = 1 }
-  } | ConvertTo-Json -Depth 6 -Compress
-  $body = [System.Text.Encoding]::UTF8.GetBytes($payload)
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-  # 云端偶发慢/断连（实测 2-5 秒成功，偶尔整请求挂住），重试几次再退回 SAPI
-  $hex = $null
-  $req = @{
-    Uri = $Endpoint + "/v1/t2a_v2"
-    Method = "Post"
-    Headers = @{ Authorization = "Bearer " + $env:PET_TTS_KEY }
-    ContentType = "application/json; charset=utf-8"
-    Body = $body
-    TimeoutSec = $TimeoutSec
-  }
-  # 显式代理：PS 5.1 走系统代理时，部分 Clash 配置下会整请求挂到超时
-  if ($Proxy) { $req["Proxy"] = $Proxy; $req["ProxyUseDefaultCredentials"] = $false }
-  for ($attempt = 1; $attempt -le 3; $attempt++) {
-    try {
-      $resp = Invoke-RestMethod @req
-      if ($resp.base_resp.status_code -ne 0) { throw ("api " + $resp.base_resp.status_msg) }
-      if (-not $resp.data.audio) { throw "empty audio" }
-      $hex = $resp.data.audio
-      break
-    } catch {
-      try { [System.IO.File]::WriteAllText($errFile, ("try " + $attempt + ": " + $_.Exception.Message)) } catch { }
-      Start-Sleep -Seconds 1
-    }
-  }
-
-  if ($hex) {
-    try {
-      $wav = Join-Path $env:TEMP ("pet-tts-" + [guid]::NewGuid().ToString("N") + ".wav")
-      [System.IO.File]::WriteAllBytes($wav, (Get-HexBytes $hex))
-      try { Play-Wav $wav } finally { Remove-Item $wav -ErrorAction SilentlyContinue }
-      Remove-Item $errFile -ErrorAction SilentlyContinue
-      exit 0
-    } catch {
-      try { [System.IO.File]::WriteAllText($errFile, ("play: " + $_.Exception.Message)) } catch { }
-    }
-  }
-}
-
-Add-Type -AssemblyName System.Speech
-$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$picked = ""
-try {
-  if ($SapiVoice) {
-    $s.SelectVoice($SapiVoice)
-    $picked = $SapiVoice
-  } else {
-    # 已经指定了女声，就别让系统默认的男声（如 Microsoft David）顶上来
-    $voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo })
-    $target = $voices | Where-Object { $_.Culture.Name -like 'zh*' -and $_.Gender -eq 'Female' } | Select-Object -First 1
-    if (-not $target) { $target = $voices | Where-Object { $_.Culture.Name -like 'zh*' } | Select-Object -First 1 }
-    if (-not $target) { $target = $voices | Where-Object { $_.Gender -eq 'Female' } | Select-Object -First 1 }
-    if ($target) {
-      $s.SelectVoice($target.Name)
-      $picked = $target.Name
-    }
-  }
-} catch { }
-if (-not $picked) {
-  try { [System.IO.File]::WriteAllText($errFile, "sapi: 本机没有可用的女声，跳过朗读（请在系统里安装中文女声）") } catch { }
-  exit 0
-}
-$s.Speak($text)
-"#;
-
-fn tts_script_path() -> PathBuf {
-    std::env::temp_dir().join("codex-pet-tts.ps1")
-}
-
-fn ensure_tts_script() -> Option<PathBuf> {
-    let path = tts_script_path();
-    let current = fs::read_to_string(&path).unwrap_or_default();
-    // 必须带 BOM 写入：PowerShell 5.1 对无 BOM 的脚本按 ANSI 解码，中文注释会吞掉
-    // 后面的行（实测把下一行的赋值整行变成注释，脚本静默 exit 0，一点声音都没有）
-    if current.trim_start_matches('\u{feff}') != TTS_SCRIPT {
-        fs::write(&path, format!("\u{feff}{TTS_SCRIPT}")).ok()?;
-    }
-    Some(path)
-}
-
-/// 读用户级环境变量（HKCU\Environment）。
-/// 桌宠若在 setx 之前就启动了，进程里拿不到新 key，这里兜底一次。
-#[cfg(windows)]
-fn user_env_var(name: &str) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    let out = Command::new("reg")
-        .args(["query", "HKCU\\Environment", "/v", name])
-        .stdin(Stdio::null())
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    // 形如：    MINIMAX_API_KEY    REG_SZ    sk-cp-...
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find(|l| l.contains("REG_SZ"))
-        .and_then(|l| l.split_whitespace().last())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
-#[cfg(not(windows))]
-fn user_env_var(_name: &str) -> Option<String> {
-    None
-}
-
-/// 用 Windows 内置 SAPI 朗读。文本走临时文件，避开 PowerShell 的编码与引号问题。
+/// 朗读一段文本。供应商由配置决定（见 tts.rs 的预设表），
 /// 念的时候通知前端切到「说话」姿态，念完再切回来。
 fn speak(app: &tauri::AppHandle, text: String) {
     let clean: String = text
@@ -645,29 +488,92 @@ fn speak(app: &tauri::AppHandle, text: String) {
         clean
     };
 
-    let Some(script) = ensure_tts_script() else {
-        eprintln!("[codex-pet] 写 TTS 脚本失败");
-        return;
-    };
-
-    let seq = TTS_SEQ.fetch_add(1, Ordering::Relaxed);
-    let text_file = std::env::temp_dir().join(format!("codex-pet-tts-{}-{seq}.txt", std::process::id()));
-    if fs::write(&text_file, spoken.as_bytes()).is_err() {
-        return;
-    }
-
     let cfg = load_config();
     let tts = cfg.tts.unwrap_or_default();
-    let engine = tts.engine.unwrap_or_else(|| "minimax".to_string());
-    // key 优先环境变量（默认 MINIMAX_API_KEY），拿不到再用 pet.json 里的兜底
-    let key_env = tts.api_key_env.unwrap_or_else(|| "MINIMAX_API_KEY".to_string());
-    let key = std::env::var(&key_env)
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-        // 进程环境拿不到时读用户环境变量（setx 后没重启桌宠的情况）
-        .or_else(|| user_env_var(&key_env))
-        .or_else(|| tts.api_key.clone())
-        .unwrap_or_default();
+
+    // 朗读是串行的事，别堵住调用方线程
+    let handle = app.clone();
+    thread::spawn(move || {
+        let _ = handle.emit("pet:speaking", serde_json::json!({ "on": true }));
+        let result = speak_sync(&tts, &spoken);
+        let _ = handle.emit("pet:speaking", serde_json::json!({ "on": false }));
+        if let Err(e) = result {
+            eprintln!("[codex-pet] 朗读失败：{e}");
+        }
+    });
+}
+
+/// 同步朗读。出错把原因写到 stderr 和临时错误文件，界面上也会显示。
+fn speak_sync(cfg: &TtsConfig, text: &str) -> Result<(), String> {
+    let err_file = std::env::temp_dir().join("codex-pet-tts.err");
+    let _ = fs::remove_file(&err_file);
+
+    // 本机 SAPI 是独立的一条路（不走云端）
+    if cfg.provider_id() == "sapi" {
+        return sapi_speak(cfg, text);
+    }
+
+    let seq = TTS_SEQ.fetch_add(1, Ordering::Relaxed);
+    let audio = tts::synthesize(cfg, text).map_err(|e| {
+        let _ = fs::write(&err_file, format!("{e}\n"));
+        e
+    })?;
+    let tag = format!("{}-{seq}", std::process::id());
+    tts::play(&audio, &tag).map_err(|e| {
+        let _ = fs::write(&err_file, format!("{e}\n"));
+        e
+    })
+}
+
+/// 本机 SAPI 朗读。音色按「中文女声 → 任意中文 → 任意女声」挑，
+/// 一个女声都没有就静默跳过——宁可不出声，也不要冒出男声。
+fn sapi_speak(cfg: &TtsConfig, text: &str) -> Result<(), String> {
+    const SAPI_SCRIPT: &str = r#"param(
+  [Parameter(Mandatory=$true)][string]$TextFile,
+  [string]$SapiVoice = ""
+)
+$ErrorActionPreference = "Continue"
+$text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
+if (-not $text -or -not $text.Trim()) { exit 0 }
+
+$errFile = Join-Path $env:TEMP "codex-pet-tts.err"
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$picked = ""
+try {
+  if ($SapiVoice) {
+    $s.SelectVoice($SapiVoice)
+    $picked = $SapiVoice
+  } else {
+    $voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo })
+    $target = $voices | Where-Object { $_.Culture.Name -like 'zh*' -and $_.Gender -eq 'Female' } | Select-Object -First 1
+    if (-not $target) { $target = $voices | Where-Object { $_.Culture.Name -like 'zh*' } | Select-Object -First 1 }
+    if (-not $target) { $target = $voices | Where-Object { $_.Gender -eq 'Female' } | Select-Object -First 1 }
+    if ($target) {
+      $s.SelectVoice($target.Name)
+      $picked = $target.Name
+    }
+  }
+} catch { }
+if (-not $picked) {
+  try { [System.IO.File]::WriteAllText($errFile, "sapi: 本机没有可用的女声，跳过朗读（请在系统里安装中文女声）") } catch { }
+  exit 0
+}
+$s.Speak($text)
+"#;
+
+    let script = std::env::temp_dir().join("codex-pet-sapi.ps1");
+    let current = fs::read_to_string(&script).unwrap_or_default();
+    // 必须带 BOM 写入：PowerShell 5.1 对无 BOM 的脚本按 ANSI 解码，中文注释会吞掉
+    // 后面的行（实测把下一行的赋值整行变成注释，脚本静默 exit 0，一点声音都没有）
+    if current.trim_start_matches('\u{feff}') != SAPI_SCRIPT {
+        fs::write(&script, format!("\u{feff}{SAPI_SCRIPT}"))
+            .map_err(|e| format!("写 SAPI 脚本失败：{e}"))?;
+    }
+
+    let seq = TTS_SEQ.fetch_add(1, Ordering::Relaxed);
+    let text_file = std::env::temp_dir().join(format!("codex-pet-sapi-{}-{seq}.txt", std::process::id()));
+    fs::write(&text_file, text.as_bytes()).map_err(|e| format!("写临时文件失败：{e}"))?;
 
     let mut cmd = Command::new("powershell");
     cmd.args([
@@ -679,52 +585,32 @@ fn speak(app: &tauri::AppHandle, text: String) {
     ])
     .arg(&script)
     .arg("-TextFile")
-    .arg(&text_file)
-    .arg("-Engine")
-    .arg(&engine)
-    .arg("-Endpoint")
-    .arg(tts.endpoint.unwrap_or_else(|| "https://api.minimaxi.com".to_string()))
-    .arg("-Model")
-    .arg(tts.model.unwrap_or_else(|| "speech-2.8-turbo".to_string()))
-    .arg("-VoiceId")
-    .arg(tts.voice_id.unwrap_or_else(|| "female-tianmei".to_string()));
-    if let Some(v) = tts.sapi_voice {
+    .arg(&text_file);
+    if let Some(v) = cfg.sapi_voice.as_deref() {
         if !v.trim().is_empty() {
             cmd.arg("-SapiVoice").arg(v);
         }
     }
-    // 显式代理：pet.json 的 tts.proxy 优先，其次是本进程的 HTTPS_PROXY/HTTP_PROXY
-    let proxy = tts
-        .proxy
-        .clone()
-        .filter(|p| !p.trim().is_empty())
-        .or_else(|| std::env::var("HTTPS_PROXY").ok())
-        .or_else(|| std::env::var("HTTP_PROXY").ok());
-    if let Some(p) = proxy {
-        cmd.arg("-Proxy").arg(p);
-    }
-    // key 走环境变量，不进命令行（避免出现在进程列表里）
-    cmd.env("PET_TTS_KEY", key);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x0800_0000);
     }
-    if let Ok(mut child) = cmd.spawn() {
-        // 朗读是串行的事，别堵住调用方线程
-        let handle = app.clone();
-        thread::spawn(move || {
-            let _ = handle.emit("pet:speaking", serde_json::json!({ "on": true }));
-            let _ = child.wait();
-            let _ = handle.emit("pet:speaking", serde_json::json!({ "on": false }));
-            let _ = fs::remove_file(&text_file);
+    let out = cmd.output().map_err(|e| format!("调 PowerShell 失败：{e}"))?;
+    let _ = fs::remove_file(&text_file);
+    if !out.status.success() {
+        let err = std::env::temp_dir().join("codex-pet-tts.err");
+        let msg = fs::read_to_string(&err).unwrap_or_default();
+        return Err(if msg.trim().is_empty() {
+            "本机朗读失败".into()
+        } else {
+            msg.trim().to_string()
         });
-    } else {
-        let _ = fs::remove_file(&text_file);
     }
+    Ok(())
 }
 
 /// 跑一次对话：执行配置里的命令，逐行抽文本推气泡（流式），结束补 done。
@@ -879,6 +765,29 @@ fn pet_set_voice(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 界面不回显密钥，提交里 key 留空时沿用磁盘上原来那份；
+/// 填了新值就以新值为准。
+fn merge_secret(next: &mut Value, old: Option<&Value>, section: &str) {
+    let Some(old_key) = old
+        .and_then(|o| o.get(section))
+        .and_then(|s| s.get("api_key"))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(obj) = next.get_mut(section).and_then(Value::as_object_mut) else {
+        return;
+    };
+    let blank = obj
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    if blank {
+        obj.insert("api_key".to_string(), old_key);
+    }
+}
+
 /// 设置界面用：回显配置（去掉 API key，密钥不回显也不落表单）＋出厂默认值。
 #[tauri::command]
 fn pet_get_config() -> Value {
@@ -890,6 +799,9 @@ fn pet_get_config() -> Value {
         .unwrap_or_else(default_config_value);
     if let Some(tts) = cfg.get_mut("tts").and_then(Value::as_object_mut) {
         tts.remove("api_key");
+    }
+    if let Some(asr) = cfg.get_mut("asr").and_then(Value::as_object_mut) {
+        asr.remove("api_key");
     }
     serde_json::json!({
         "config": cfg,
@@ -906,17 +818,11 @@ fn pet_save_config(app: tauri::AppHandle, config: Value) -> Result<String, Strin
     }
     let path = config_path();
     let mut next = config;
-    // 界面不回显密钥，保存时把磁盘上原有的 tts.api_key 保回来
+    // 界面不回显密钥，保存时把磁盘上原有的密钥保回来——
+    // 填了新值就覆盖，留空就继续用原来那份。
     let old: Option<Value> = fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok());
-    let old_key = old
-        .as_ref()
-        .and_then(|o| o.get("tts"))
-        .and_then(|t| t.get("api_key"))
-        .cloned();
-    if let (Some(key), Some(tts)) = (old_key, next.get_mut("tts").and_then(Value::as_object_mut)) {
-        if !tts.contains_key("api_key") {
-            tts.insert("api_key".to_string(), key);
-        }
+    for section in ["tts", "asr"] {
+        merge_secret(&mut next, old.as_ref(), section);
     }
     write_config(&path, &next);
 
@@ -934,13 +840,32 @@ fn pet_save_config(app: tauri::AppHandle, config: Value) -> Result<String, Strin
     Ok(format!("已保存到 {}", path.display()))
 }
 
+/// 设置界面用：拿到全部 TTS 供应商预设（渲染下拉框用）。
 #[tauri::command]
-fn pet_preview_voice(app: tauri::AppHandle, text: Option<String>) {
+fn pet_tts_providers() -> Value {
+    serde_json::json!({ "providers": tts::provider_list() })
+}
+
+/// 试听。失败把原因回传给界面显示（成功就返回空串）。
+/// `config` 传了就用界面上的当前值，没传就用磁盘上的——这样改完没保存也能试。
+#[tauri::command]
+fn pet_preview_voice(config: Option<Value>, text: Option<String>) -> Result<(), String> {
     let t = text
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "你好呀，我是 alice，很高兴见到你。".to_string());
-    speak(&app, t);
+    let tts = match config {
+        Some(c) => {
+            let mut t = c.get("tts").cloned().unwrap_or(Value::Null);
+            // 界面不回显密钥：用户没重新填就沿用磁盘上保存的那份，
+            // 否则改个音色想试听，反而因为 key 空了试听失败。
+            let disk = serde_json::json!({ "tts": { "api_key": load_config().tts.as_ref().and_then(|t| t.api_key.clone()) } });
+            merge_secret(&mut t, Some(&disk), "tts");
+            serde_json::from_value::<TtsConfig>(t).unwrap_or_default()
+        }
+        None => load_config().tts.unwrap_or_default(),
+    };
+    speak_sync(&tts, &t)
 }
 
 #[tauri::command]
@@ -1076,7 +1001,7 @@ fn is_asr_hallucination(text: &str) -> bool {
         .filter(|c| c.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(c))
         .collect::<String>()
         .to_lowercase();
-    const PHRASES: [&str; 9] = [
+    const PHRASES: [&str; 12] = [
         "谢谢大家收看",
         "謝謝大家收看",
         "谢谢大家",
@@ -1084,20 +1009,38 @@ fn is_asr_hallucination(text: &str) -> bool {
         "谢谢观看",
         "謝謝觀看",
         "请不吝点赞订阅",
+        "字幕由amaraorg社区提供",
+        "字幕志愿者",
+        "明镜与点点栏目",
         "thankyou",
         "thankyouforwatching",
     ];
     PHRASES.iter().any(|p| norm == *p)
 }
 
+/// 识别一段录音。引擎由 asr.provider 决定。
 fn transcribe(wav: &Path, cfg: &Config) -> Result<String, String> {
-    let asr = cfg.asr.as_ref();
+    let asr = cfg.asr.clone().unwrap_or_default();
+    let provider = asr.provider.clone().unwrap_or_else(|| "whisper".to_string());
+    let raw = match provider.as_str() {
+        "command" => asr_command(wav, &asr)?,
+        "openai" => asr_openai(wav, &asr)?,
+        _ => asr_whisper(wav, &asr)?,
+    };
+    let text = clean_asr(&raw);
+    Ok(if is_asr_hallucination(&text) { String::new() } else { text })
+}
+
+/// 本机 whisper.cpp server。multipart 上传，响应是 {"text": "..."}。
+fn asr_whisper(wav: &Path, asr: &AsrConfig) -> Result<String, String> {
     let endpoint = asr
-        .and_then(|a| a.endpoint.clone())
+        .endpoint
+        .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "http://127.0.0.1:8080/inference".to_string());
     let lang = asr
-        .and_then(|a| a.language.clone())
+        .language
+        .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "zh".to_string());
 
@@ -1112,9 +1055,12 @@ fn transcribe(wav: &Path, cfg: &Config) -> Result<String, String> {
         "response_format=json",
         "-F",
         &format!("language={lang}"),
-        &endpoint,
     ])
-    .stdin(Stdio::null());
+    .arg(&endpoint);
+    if let Some(p) = asr.proxy.as_deref().filter(|s| !s.trim().is_empty()) {
+        cmd.arg("-x").arg(p);
+    }
+    cmd.stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1128,8 +1074,149 @@ fn transcribe(wav: &Path, cfg: &Config) -> Result<String, String> {
     if let Some(err) = v.get("error").and_then(Value::as_str) {
         return Err(format!("识别失败：{err}"));
     }
-    let text = clean_asr(v.get("text").and_then(Value::as_str).unwrap_or(""));
-    Ok(if is_asr_hallucination(&text) { String::new() } else { text })
+    Ok(v.get("text").and_then(Value::as_str).unwrap_or("").to_string())
+}
+
+/// OpenAI 兼容的转写地址。只认 `api_endpoint`——
+/// `endpoint` 是本机 whisper 的地址，拿来当云端转写地址会打到错误的服务上。
+fn openai_endpoint(asr: &AsrConfig) -> String {
+    asr.api_endpoint
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://api.openai.com/v1/audio/transcriptions".to_string())
+}
+
+/// OpenAI 兼容的 /audio/transcriptions。multipart 上传，响应也是 {"text": "..."}。
+fn asr_openai(wav: &Path, asr: &AsrConfig) -> Result<String, String> {
+    let endpoint = openai_endpoint(asr);
+    let lang = asr
+        .language
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "zh".to_string());
+    let model = asr
+        .model
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "whisper-1".to_string());
+
+    let key_env = asr
+        .api_key_env
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "OPENAI_API_KEY".to_string());
+    let key = tts::lookup_key(
+        asr.api_key.as_deref().unwrap_or_default(),
+        &key_env,
+    );
+    if key.is_empty() {
+        return Err(format!("没拿到 API key：填在设置里，或设环境变量 {key_env}"));
+    }
+
+    // key 通过 stdin 交给 curl（curl -K - 从 stdin 读配置）：
+    // 既不在进程命令行里（ps 能看到），也不会落盘成明文文件。
+    let curl_cfg = format!("header = \"Authorization: Bearer {}\"\n", key.replace('"', "\\\""));
+
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-s",
+        "-m",
+        "120",
+        "-K",
+        "-",
+        "-F",
+        &format!("file=@{}", wav.display()),
+        "-F",
+        "response_format=json",
+        "-F",
+        &format!("language={lang}"),
+        "-F",
+        &format!("model={model}"),
+    ])
+    .arg(&endpoint);
+    if let Some(p) = asr.proxy.as_deref().filter(|s| !s.trim().is_empty()) {
+        cmd.arg("-x").arg(p);
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("调 curl 失败：{e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(curl_cfg.as_bytes());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("等 curl 结束失败：{e}"))?;
+    if !out.status.success() {
+        let body = String::from_utf8_lossy(&out.stdout);
+        let err = String::from_utf8_lossy(&out.stderr);
+        let detail = if body.trim().is_empty() {
+            err.lines().next().unwrap_or("").trim().to_string()
+        } else {
+            body.chars().take(200).collect::<String>()
+        };
+        return Err(format!("识别服务返回错误（{}）：{detail}", out.status));
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "识别服务返回的不是 JSON".to_string())?;
+    if let Some(err) = v.get("error") {
+        let d = err
+            .get("message")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| err.to_string());
+        return Err(format!("识别失败：{d}"));
+    }
+    Ok(v.get("text").and_then(Value::as_str).unwrap_or("").to_string())
+}
+
+/// 外部命令模式：命令可用 {audio_file} {language} 占位，stdout 就是识别结果。
+fn asr_command(wav: &Path, asr: &AsrConfig) -> Result<String, String> {
+    let cmdline = asr
+        .command
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("外部命令模式还没填命令")?;
+    let lang = asr.language.clone().unwrap_or_else(|| "zh".to_string());
+    let expanded = cmdline
+        .replace("{audio_file}", &wav.to_string_lossy())
+        .replace("{language}", &lang);
+
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", &expanded]);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().map_err(|e| format!("跑外部命令失败：{e}"))?;
+    if !out.status.success() {
+        let err = decode_console_output(&out.stderr);
+        return Err(format!(
+            "外部命令失败：{}",
+            err.lines().next().unwrap_or("").trim()
+        ));
+    }
+    Ok(decode_console_output(&out.stdout).trim().to_string())
+}
+
+/// 命令输出解码。Windows 控制台输出重定向到管道时用的是 ANSI 代码页（936/GBK），
+/// 不是 UTF-8——chcp 在这种场景下不生效，只能在读出来之后按 GBK 解。
+pub fn decode_console_output(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => encoding_rs::GBK.decode(bytes).0.into_owned(),
+    }
 }
 
 #[tauri::command]
@@ -1481,6 +1568,7 @@ fn main() {
             pet_set_voice,
             pet_get_config,
             pet_save_config,
+            pet_tts_providers,
             pet_preview_voice,
             pet_open_settings,
             pet_set_topmost,
@@ -1493,4 +1581,214 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running codex-pet");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// 起一个最小 HTTP 服务，把收到的请求原文记下来，然后回一个固定响应。
+    /// `body` 是响应体，Content-Length 按实际字节数算（中文是 UTF-8，三个字节）。
+    fn http_once(body: &str) -> (u16, Arc<Mutex<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let captured = Arc::new(Mutex::new(String::new()));
+        let sink = captured.clone();
+        let body = body.to_string();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else { return };
+            let mut got = String::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = match sock.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                got.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                // 头里拿到 Content-Length 就知道 body 到哪了
+                if let Some(idx) = got.find("\r\n\r\n") {
+                    let head = &got[..idx];
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            if k.trim().eq_ignore_ascii_case("content-length") {
+                                v.trim().parse::<usize>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= idx + 4 + len {
+                        break;
+                    }
+                }
+            }
+            *sink.lock().unwrap() = got;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        });
+        (port, captured)
+    }
+
+    fn fake_wav() -> PathBuf {
+        // 文件名带上测试名：测试是并行跑的，共用一个文件会互相删掉
+        let name = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace("::", "_");
+        let p = std::env::temp_dir().join(format!("codex-pet-test-{name}.wav"));
+        fs::write(&p, b"RIFF----WAVEfmt ").expect("写测试 wav");
+        p
+    }
+
+    #[test]
+    fn openai模式的地址优先用api_endpoint() {
+        let asr = AsrConfig {
+            provider: Some("openai".into()),
+            endpoint: Some("http://127.0.0.1:8080/inference".into()),
+            api_endpoint: Some("https://example.com/v1/audio/transcriptions".into()),
+            ..Default::default()
+        };
+        // endpoint 是本机 whisper 的地址，不能被当成云端转写地址
+        assert_eq!(
+            openai_endpoint(&asr),
+            "https://example.com/v1/audio/transcriptions"
+        );
+    }
+
+    #[test]
+    fn openai模式没填地址时用官方地址而不是whisper的() {
+        let asr = AsrConfig {
+            provider: Some("openai".into()),
+            endpoint: Some("http://127.0.0.1:8080/inference".into()),
+            api_endpoint: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(
+            openai_endpoint(&asr),
+            "https://api.openai.com/v1/audio/transcriptions"
+        );
+    }
+
+    #[test]
+    fn openai模式能上传音频并解析结果() {
+        let (port, captured) = http_once("{\"text\":\"你好呀\"}");
+        let wav = fake_wav();
+        let asr = AsrConfig {
+            provider: Some("openai".into()),
+            api_endpoint: Some(format!("http://127.0.0.1:{port}/v1/audio/transcriptions")),
+            api_key: Some("test-key-abc".into()),
+            model: Some("whisper-1".into()),
+            language: Some("zh".into()),
+            ..Default::default()
+        };
+        let text = asr_openai(&wav, &asr).expect("识别应该成功");
+        assert_eq!(text, "你好呀");
+        let req = captured.lock().unwrap().clone();
+        // key 走 stdin 传进 curl，但请求头里必须真的带上
+        assert!(req.contains("Authorization: Bearer test-key-abc"), "实际请求：{req}");
+        // 音频是 multipart 上传
+        assert!(req.contains("name=\"file\""), "实际请求：{req}");
+        assert!(req.contains("name=\"model\"") && req.contains("whisper-1"));
+        let _ = fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn openai模式没key时给出明确提示() {
+        let wav = fake_wav();
+        let asr = AsrConfig {
+            provider: Some("openai".into()),
+            api_endpoint: Some("http://127.0.0.1:1/v1/audio/transcriptions".into()),
+            api_key: Some(String::new()),
+            api_key_env: Some("PET_TEST_NOT_SET_KEY".into()),
+            ..Default::default()
+        };
+        let err = asr_openai(&wav, &asr).unwrap_err();
+        assert!(err.contains("PET_TEST_NOT_SET_KEY"), "实际错误：{err}");
+        let _ = fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn 外部命令模式能拿到标准输出() {
+        let wav = fake_wav();
+        let asr = AsrConfig {
+            provider: Some("command".into()),
+            command: Some("echo 识别出来的文字".into()),
+            language: Some("zh".into()),
+            ..Default::default()
+        };
+        let text = asr_command(&wav, &asr).expect("命令应该跑通");
+        assert!(text.contains("识别出来的文字"), "实际输出：{text}");
+        let _ = fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn 外部命令模式会把占位符换成真实路径() {
+        let wav = fake_wav();
+        let asr = AsrConfig {
+            provider: Some("command".into()),
+            command: Some("echo {audio_file} {language}".into()),
+            language: Some("ja".into()),
+            ..Default::default()
+        };
+        let text = asr_command(&wav, &asr).expect("命令应该跑通");
+        assert!(text.contains(&wav.to_string_lossy().to_string()), "实际输出：{text}");
+        assert!(text.contains("ja"), "实际输出：{text}");
+        let _ = fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn 外部命令没填时给出明确提示() {
+        let wav = fake_wav();
+        let asr = AsrConfig {
+            provider: Some("command".into()),
+            command: Some(String::new()),
+            ..Default::default()
+        };
+        let err = asr_command(&wav, &asr).unwrap_err();
+        assert!(err.contains("外部命令"), "实际错误：{err}");
+        let _ = fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn 幻听黑名单会被过滤掉() {
+        for p in ["谢谢观看", "谢 谢 观 看", "thank you for watching", "字幕由amara.org社区提供"] {
+            assert!(is_asr_hallucination(p), "应该被过滤：{p}");
+        }
+        assert!(!is_asr_hallucination("帮我看看这个文件"));
+    }
+
+    #[test]
+    fn key留空时沿用磁盘上保存的() {
+        let old = serde_json::json!({ "tts": { "api_key": "old-key" } });
+        let mut next = serde_json::json!({ "tts": { "api_key": "", "model": "x" } });
+        merge_secret(&mut next, Some(&old), "tts");
+        assert_eq!(next["tts"]["api_key"], "old-key");
+        assert_eq!(next["tts"]["model"], "x");
+    }
+
+    #[test]
+    fn key填了新值就以新值为准() {
+        let old = serde_json::json!({ "tts": { "api_key": "old-key" } });
+        let mut next = serde_json::json!({ "tts": { "api_key": "new-key" } });
+        merge_secret(&mut next, Some(&old), "tts");
+        assert_eq!(next["tts"]["api_key"], "new-key");
+    }
+
+    #[test]
+    fn 磁盘上没有key时不硬塞() {
+        let old = serde_json::json!({ "tts": { "model": "x" } });
+        let mut next = serde_json::json!({ "tts": { "api_key": "" } });
+        merge_secret(&mut next, Some(&old), "tts");
+        assert_eq!(next["tts"]["api_key"], "");
+    }
 }
