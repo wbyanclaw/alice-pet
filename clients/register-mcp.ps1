@@ -24,12 +24,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = Split-Path -Parent $PSScriptRoot
-# 仓库里是 src-tauri\target\release\，发布包里 exe 就在脚本旁边——
-# 两个位置都认，脚本才能同时在仓库和发布包里用。
-$exe = Join-Path $repo "src-tauri\target\release\codex-pet.exe"
+# 项目根 = 同时装着 exe 和 clients\ 的那个目录。
+# 仓库里脚本在 clients\ 下（往上一级才是根），发布包里脚本就在根上——
+# 两种布局都要能用，所以按有没有 clients\ 子目录来判断。
+$root = $PSScriptRoot
+if (-not (Test-Path (Join-Path $root "clients"))) {
+    $root = Split-Path -Parent $root
+}
+$exe = Join-Path $root "src-tauri\target\release\codex-pet.exe"
 if (-not (Test-Path $exe)) {
-    $exe = Join-Path $repo "codex-pet.exe"
+    $exe = Join-Path $root "codex-pet.exe"
 }
 
 function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -38,7 +42,7 @@ function Write-Warn([string]$msg) { Write-Host "    $msg" -ForegroundColor Yello
 
 # ---- 1. 编译 ----
 if (-not $SkipBuild) {
-    $srcDir = Join-Path $repo "src-tauri"
+    $srcDir = Join-Path $root "src-tauri"
     if (Test-Path (Join-Path $srcDir "Cargo.toml")) {
         Write-Step "编译 release 版"
         Push-Location $srcDir
@@ -73,11 +77,11 @@ $filled = @{}
 # 用 MatchEvaluator 避免正则替换对 $ 和反斜杠的二次处理。
 $exeForJson = $exe.Replace("\", "\\")
 foreach ($k in $templates.Keys) {
-    $src = Join-Path $repo $templates[$k]
+    $src = Join-Path $root $templates[$k]
     $raw = Get-Content $src -Raw
     $filled[$k] = [regex]::Replace($raw, '\$\{CODEX_PET_EXE\}', { param($m) $exeForJson })
 }
-$outDir = Join-Path $repo "clients\generated"
+$outDir = Join-Path $root "clients\generated"
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 foreach ($k in $filled.Keys) {
     $p = Join-Path $outDir "$k.mcp.json"
@@ -159,7 +163,7 @@ function Register-CodexApp {
     $cfg = Join-Path $env:USERPROFILE ".codex\config.toml"
     if (-not (Test-Path $cfg)) { throw "找不到 $cfg" }
     $raw = [System.IO.File]::ReadAllText($cfg)
-    $market = Join-Path $repo "plugin"
+    $market = Join-Path $root "plugin"
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($l in ($raw -split "`r?`n")) { $lines.Add($l) }
 
@@ -216,4 +220,4 @@ foreach ($t in $targets) {
 
 Write-Host ""
 Write-Host "完成。先启动桌宠，再让 agent 调用 pet_state 验证：" -ForegroundColor Green
-Write-Host "  .\src-tauri\target\release\codex-pet.exe" -ForegroundColor White
+Write-Host "  $exe" -ForegroundColor White
