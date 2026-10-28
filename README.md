@@ -45,6 +45,38 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 实现上 `#pet` 的 `data-tauri-drag-region` 写成 `false`，由前端调 `startDragging()` 发起原生拖动，
 用它的 Promise（拖完才 resolve）收尾姿势，避免拖动中的姿势卡住。
 
+## 动画
+
+雪碧是 4×4 共 16 帧（1024×1024），**逐帧播放**：CSS 用 `steps(1)` 关键帧在 16 个帧位之间整帧跳，
+位移走 `transform`（合成器线程），不重绘背景。各状态的播放时长取自 Mori 的 `manifest.json`：
+
+| 状态 | 时长 | 帧数 | 备注 |
+|---|---|---|---|
+| idle | 3.0s | 16 | 循环 |
+| sleeping | 5.0s | 16 | 循环 |
+| thinking | 2.0s | 16 | 循环 |
+| writing（recording） | 1.5s | 16 | 循环 |
+| tool（walking） | 1.5s | 16 | 循环 |
+| done | 1.2s | 16 | **一次性**，播完停在最后一帧 |
+| error | 1.6s | 16 | **一次性**，播完停在最后一帧 |
+| dragging | 1.6s | 16 | 循环 |
+
+图集切换靠 CSS 变量 `--sheet`（`#pet` 上），状态 class 一换背景就跟着换，
+`body.dragging` 在状态规则之后覆盖成 `dragging` 图集。
+
+额外的临时姿态（class 加在 `#pet` 上，优先级高于状态和随机小动作）：
+
+| class | 触发 | 效果 |
+|---|---|---|
+| `speaking` | TTS 开始朗读 | 借 `done` 图集里带嘴型的帧，配轻微上下起伏，念完自动停 |
+| `petting` | 单击角色 | 换成笑脸图集蹦一下，1.6 秒后回到当前状态 |
+
+「说话」姿态由主进程在朗读前后发 `pet:speaking` 事件驱动（`main.rs` 的 `speak()`）。
+
+关于取景漂移：实测相邻帧的像素位移只有 1~2 px（256 px 画布上，缩到 200 px 显示后不足 1.5 px），
+`recording` / `sleeping` 完全静止，`dragging` / `walking` 的 ±4 px 是有意的摆动动作。
+所以直接连播即可，不需要额外的取景补偿。
+
 ## 右键菜单
 
 在宠物上右键弹出菜单（菜单在窗口内会自适应，不会超出边界）：
@@ -75,7 +107,8 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 | 全局热键 `Ctrl+Alt+P` | 任何程序在前台都生效；被别的软件占用时只在 stderr 记一条，不影响托盘召回 |
 
 唤回时主进程会发 `pet:show` 事件，前端收到后撤掉 `hidden-pet` 样式（否则窗口显示出来了宠物还是透明的）。
-热键常量在 `src-tauri/src/main.rs` 的 `HOTKEY`，托盘图标沿用 `tauri.conf.json` 里的 `icons/icon.ico`。
+热键常量在 `src-tauri/src/main.rs` 的 `HOTKEY`，托盘图标用 `tauri.conf.json` 里的 `icons/alice.ico`
+（从雪碧第 0 帧裁出的圆形头像，16–256 共 9 档，与屏幕上的角色是同一张脸）。
 
 ## 语音
 

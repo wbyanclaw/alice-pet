@@ -445,7 +445,7 @@ fn extract_text(line: &str) -> Option<String> {
 /// `done` 的那一次才会念——流式中间态只上屏不出声。
 fn emit_bubble(app: &tauri::AppHandle, text: String, done: bool) {
     if done && VOICE.load(Ordering::Relaxed) {
-        speak(text.clone());
+        speak(app, text.clone());
     }
     let _ = app.emit("pet:bubble", Bubble { text, done });
 }
@@ -611,7 +611,8 @@ fn user_env_var(_name: &str) -> Option<String> {
 }
 
 /// 用 Windows 内置 SAPI 朗读。文本走临时文件，避开 PowerShell 的编码与引号问题。
-fn speak(text: String) {
+/// 念的时候通知前端切到「说话」姿态，念完再切回来。
+fn speak(app: &tauri::AppHandle, text: String) {
     let clean: String = text
         .lines()
         .filter(|l| !l.trim_start().starts_with("agent 没有输出文本"))
@@ -698,8 +699,11 @@ fn speak(text: String) {
     }
     if let Ok(mut child) = cmd.spawn() {
         // 朗读是串行的事，别堵住调用方线程
+        let handle = app.clone();
         thread::spawn(move || {
+            let _ = handle.emit("pet:speaking", serde_json::json!({ "on": true }));
             let _ = child.wait();
+            let _ = handle.emit("pet:speaking", serde_json::json!({ "on": false }));
             let _ = fs::remove_file(&text_file);
         });
     } else {
@@ -915,12 +919,12 @@ fn pet_save_config(app: tauri::AppHandle, config: Value) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn pet_preview_voice(text: Option<String>) {
+fn pet_preview_voice(app: tauri::AppHandle, text: Option<String>) {
     let t = text
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "你好呀，我是 alice，很高兴见到你。".to_string());
-    speak(t);
+    speak(&app, t);
 }
 
 #[tauri::command]
@@ -1299,7 +1303,7 @@ fn configure_http(app: &tauri::AppHandle, machine: Shared) {
                     if text.trim().is_empty() {
                         (400, "{\"error\":\"text required\"}".to_string())
                     } else {
-                        speak(text);
+                        speak(&handle, text);
                         (200, "{\"ok\":true}".to_string())
                     }
                 }

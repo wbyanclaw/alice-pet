@@ -1,22 +1,15 @@
 // Codex 桌宠前端：按状态切雪碧、气泡、输入框、语音输入与右键菜单。
-// 图集虽然是 4x4 共 16 帧，但每帧的人物位置/取景都有细微漂移，
-// 快速轮播会变成"摇头晃脑"的抖动，所以每个状态固定用第一帧，
-// 动感交给 CSS 动画（呼吸、点头、凑近、雀跃等）。
-const BASE_FRAME = "0px 0px";
+// 图集是 4x4 共 16 帧，逐帧播放交给 CSS 的 steps(1) 动画（见 style.css），
+// 前端只负责切状态 class，帧的节奏由各状态的 --sheet 与动画时长决定。
+// 素材帧间取景漂移只有 1~2px（256px 画布），缩到 200px 后不足 1.5px，不可见，
+// 所以不需要额外的取景补偿。
 
 // 可一次性播放的短动作，交给 CSS 关键帧
 const GESTURES = ["nod", "shake", "lean", "cheer", "sigh", "drowse", "startle"];
 
-// activity -> 雪碧状态
-const MAP = {
-  idle: "idle",
-  sleeping: "sleeping",
-  thinking: "thinking",
-  writing: "recording",
-  tool: "walking",
-  done: "done",
-  error: "error",
-};
+// 状态 class 名。和 style.css 里的 #pet.<状态> 一一对应，
+// 换图集、换播放时长都由 CSS 处理，这里只负责加/减 class。
+const STATES = ["idle", "sleeping", "thinking", "writing", "tool", "done", "error"];
 
 const ACTIVITY_LABEL = {
   idle: "空闲",
@@ -30,6 +23,7 @@ const ACTIVITY_LABEL = {
 
 const SCALES = [0.8, 1.0, 1.2];
 const PETTED_MS = 1600;
+const SPEAKING_MS = 4000;
 const FIDGET_MIN = 14000; // 空闲时随机做小动作的间隔
 const FIDGET_MAX = 32000;
 const CLICK_SLOP = 6; // 按下与抬起位移超过这个值就当作拖动，不弹输入框
@@ -52,7 +46,6 @@ const listen = tauri?.event?.listen;
 
 let activity = "idle";
 let detail = "";
-let state = "idle";
 let bubbleTimer = null;
 let sending = false;
 let voiceOn = false;
@@ -60,41 +53,33 @@ let topmost = true;
 let scale = 1;
 let listening = false;
 let dragging = false;
-let dragSpriteTimer = null;
+let speaking = false;
+let speakingTimer = null;
 
-function renderSprite() {
-  pet.style.backgroundImage = `url("sprites/${dragging ? "dragging" : state}.png")`;
-  pet.style.backgroundPosition = BASE_FRAME;
-}
-
+/// 图集切换由 CSS 变量 --sheet 控制：状态 class 一换，背景图跟着换。
+/// 拖拽时用 dragging 图集，由 body.dragging 覆盖（style.css 里在状态规则之后）。
 function apply(activityName, newDetail) {
   activity = activityName;
   detail = newDetail || "";
-  state = MAP[activityName] || MAP.idle;
-  renderSprite();
-  pet.className = activityName;
+  stopSpeaking();
+  // 只换状态 class，别把说话/被摸头这些临时 class 一起抹掉
+  pet.classList.remove(...STATES);
+  pet.classList.add(activityName);
 }
 
 // ---------- 拖拽 ----------
 
-/// 一按下就进入"被拎起来"的姿势：类名立刻生效（动画走合成器），
-/// 雪碧延后一点再换，免得单击时角色闪一下。
+/// 一按下就进入"被拎起来"的姿势：类名立刻生效（动画走合成器）。
 function beginDragVisual() {
   if (dragging) return;
   dragging = true;
   document.body.classList.add("dragging");
-  clearTimeout(dragSpriteTimer);
-  dragSpriteTimer = setTimeout(() => {
-    if (dragging) renderSprite();
-  }, 130);
 }
 
 function endDragVisual() {
   if (!dragging) return;
   dragging = false;
-  clearTimeout(dragSpriteTimer);
   document.body.classList.remove("dragging");
-  renderSprite();
 }
 
 /// 窗口拖动交给原生实现才跟手；startDragging 的 Promise 在拖拽结束时才 resolve，
@@ -122,17 +107,33 @@ function playGesture(name) {
   playGesture.timer = setTimeout(() => pet.classList.remove(`g-${name}`), 2400);
 }
 
-/// 被摸一下的回应：换个开心表情 + 蹦一下
+/// 被摸一下的回应：换成笑脸图集蹦一下，结束后回到当前状态
 function reactToPetting() {
   clearTimeout(reactToPetting.timer);
-  pet.style.backgroundImage = 'url("sprites/done.png")';
   pet.classList.remove(...GESTURES.map((g) => `g-${g}`));
   void pet.offsetWidth;
-  pet.classList.add("g-cheer");
+  pet.classList.add("petting");
   reactToPetting.timer = setTimeout(() => {
-    pet.classList.remove("g-cheer");
-    if (!dragging) renderSprite();
+    pet.classList.remove("petting");
+    pet.classList.remove(...STATES);
+    pet.classList.add(activity);
   }, PETTED_MS);
+}
+
+/// 说话中：借 done 图集里带嘴型的帧，配轻微起伏，念完自己停
+function startSpeaking(ms = SPEAKING_MS) {
+  clearTimeout(speakingTimer);
+  speaking = true;
+  pet.classList.remove(...GESTURES.map((g) => `g-${g}`));
+  pet.classList.add("speaking");
+  speakingTimer = setTimeout(stopSpeaking, ms);
+}
+
+function stopSpeaking() {
+  if (!speaking) return;
+  speaking = false;
+  clearTimeout(speakingTimer);
+  pet.classList.remove("speaking");
 }
 
 /// `pinned` 为真时气泡一直挂着（录着音、正在识别），不显示流式光标也不自动消失
@@ -445,7 +446,14 @@ function scheduleFidget() {
   clearTimeout(scheduleFidget.timer);
   const wait = FIDGET_MIN + Math.random() * (FIDGET_MAX - FIDGET_MIN);
   scheduleFidget.timer = setTimeout(() => {
-    if (activity === "idle" && !composer.classList.contains("show") && !listening) {
+    // 说话或被摸头时别插小动作，免得把嘴型和笑脸顶掉
+    if (
+      activity === "idle" &&
+      !composer.classList.contains("show") &&
+      !listening &&
+      !speaking &&
+      !pet.classList.contains("petting")
+    ) {
       const pool = ["nod", "lean", "sigh", "shake", "startle"];
       playGesture(pool[Math.floor(Math.random() * pool.length)]);
     }
@@ -481,6 +489,11 @@ window.addEventListener("DOMContentLoaded", () => {
   listen("pet:bubble", (event) => {
     const payload = event.payload || {};
     showBubble(payload.text || "", !!payload.done);
+  });
+  // 朗读时切「说话」姿态，念完恢复
+  listen("pet:speaking", (event) => {
+    if ((event.payload || {}).on) startSpeaking();
+    else stopSpeaking();
   });
   // 外部 agent 通过 MCP / HTTP 触发的单次动作
   listen("pet:gesture", (event) => {
