@@ -4,7 +4,7 @@ src-tauri/target/
 # 本机运行时配置与日志：含本机绝对路径、代理和 Codex 安装位置
 pet.json
 *.log
-codex-run.*
+alice-run.*
 
 # register-mcp.ps1 生成的配置：填的是本机 exe 绝对路径，换台机器就没用了
 clients/generated/

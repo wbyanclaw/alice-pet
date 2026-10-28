@@ -18,6 +18,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "alice-pet"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tiny_http",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,19 +346,6 @@ name = "chunked_transfer"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
-
-[[package]]
-name = "codex-pet"
-version = "0.1.0"
-dependencies = [
- "encoding_rs",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tiny_http",
-]
 
 [[package]]
 name = "combine"

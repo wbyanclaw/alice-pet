@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "codex-pet": {
-      "command": "${CODEX_PET_EXE}",
+    "alice-pet": {
+      "command": "${ALICE_PET_EXE}",
       "args": ["--mcp"],
       "env": {
         "MINIMAX_API_KEY": "${MINIMAX_API_KEY}"

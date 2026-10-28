@@ -331,10 +331,10 @@ fn run_command(r: &Resolved, text: &str) -> Result<Audio, String> {
         return Err("外部命令模式还没填命令".into());
     }
     let seq = std::process::id();
-    let text_file = std::env::temp_dir().join(format!("codex-pet-tts-{seq}.txt"));
+    let text_file = std::env::temp_dir().join(format!("alice-pet-tts-{seq}.txt"));
     // 输出文件用 .wav 后缀：ffmpeg 这类工具靠扩展名判断输出格式，
     // 实际是什么格式我们靠文件头猜，不影响识别。
-    let out_file = std::env::temp_dir().join(format!("codex-pet-tts-{seq}.wav"));
+    let out_file = std::env::temp_dir().join(format!("alice-pet-tts-{seq}.wav"));
     fs::write(&text_file, text.as_bytes()).map_err(|e| format!("写临时文件失败：{e}"))?;
     let _ = fs::remove_file(&out_file);
 
@@ -402,8 +402,8 @@ fn call_cloud(r: &Resolved, text: &str) -> Result<Audio, String> {
 
     let dir = std::env::temp_dir();
     let tag = format!("{}-{}", std::process::id(), r.info.id);
-    let body_file = dir.join(format!("codex-pet-tts-{tag}.req.json"));
-    let resp_file = dir.join(format!("codex-pet-tts-{tag}.resp"));
+    let body_file = dir.join(format!("alice-pet-tts-{tag}.req.json"));
+    let resp_file = dir.join(format!("alice-pet-tts-{tag}.resp"));
     fs::write(&body_file, body.as_bytes()).map_err(|e| format!("写请求体失败：{e}"))?;
 
     // 鉴权头和自定义头通过 stdin 交给 curl（curl -K - 从 stdin 读配置）。
@@ -833,14 +833,14 @@ fn user_env_var(_name: &str) -> Option<String> {
 /// 播放音频。wav 直接播，其它格式先转成 wav 再播。
 /// 返回 Err 时是「播放不了」的原因（合成成功了但放不出来）。
 pub fn play(audio: &Audio, tag: &str) -> Result<(), String> {
-    let src = std::env::temp_dir().join(format!("codex-pet-play-{tag}.{}", audio.format));
+    let src = std::env::temp_dir().join(format!("alice-pet-play-{tag}.{}", audio.format));
     fs::write(&src, &audio.bytes).map_err(|e| format!("写音频文件失败：{e}"))?;
 
     // 非 wav 先转：SoundPlayer 只认 wav
     let wav = if audio.format == "wav" {
         src
     } else {
-        let dst = std::env::temp_dir().join(format!("codex-pet-play-{tag}.wav"));
+        let dst = std::env::temp_dir().join(format!("alice-pet-play-{tag}.wav"));
         let _ = fs::remove_file(&dst);
         match convert_to_wav(&src, &dst) {
             Ok(()) => {
@@ -906,11 +906,11 @@ try {
   $p.Dispose()
   exit 0
 } catch {
-  [System.IO.File]::WriteAllText((Join-Path $env:TEMP "codex-pet-tts.err"), ("play: " + $_.Exception.Message))
+  [System.IO.File]::WriteAllText((Join-Path $env:TEMP "alice-pet-tts.err"), ("play: " + $_.Exception.Message))
   exit 1
 }
 "#;
-    let script = std::env::temp_dir().join("codex-pet-play.ps1");
+    let script = std::env::temp_dir().join("alice-pet-play.ps1");
     // 必须带 BOM：PS 5.1 对无 BOM 的 UTF-8 脚本按 ANSI 解码，中文注释会吞掉后面的行
     let body = format!("\u{feff}{PLAY_SCRIPT}");
     let needs_write = fs::read_to_string(&script)
@@ -941,7 +941,7 @@ try {
     }
     let out = cmd.output().map_err(|e| format!("调 PowerShell 失败：{e}"))?;
     if !out.status.success() {
-        let err = std::env::temp_dir().join("codex-pet-tts.err");
+        let err = std::env::temp_dir().join("alice-pet-tts.err");
         let msg = fs::read_to_string(&err).unwrap_or_default();
         return Err(if msg.trim().is_empty() {
             "播放失败".into()

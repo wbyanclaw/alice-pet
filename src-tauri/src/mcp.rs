@@ -1,7 +1,7 @@
 //! `--mcp` 模式：把桌宠暴露成 MCP server（stdio JSON-RPC）。
 //!
 //! 由 agent 侧拉起，不建窗口；每次工具调用都转发给已在运行的桌宠进程，
-//! 端口从 `%APPDATA%\codex-pet\endpoint.json` 读取，读不到就扫默认区间。
+//! 端口从 `%APPDATA%\alice-pet\endpoint.json` 读取，读不到就扫默认区间。
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -58,7 +58,7 @@ fn handle(msg: Value) -> Option<Value> {
             Some(Ok(json!({
                 "protocolVersion": proto,
                 "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "codex-pet", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "alice-pet", "version": env!("CARGO_PKG_VERSION") }
             })))
         }
         "tools/list" => Some(Ok(json!({ "tools": tools() }))),
@@ -267,5 +267,5 @@ fn endpoint_port() -> Result<u16, String> {
             return Ok(p);
         }
     }
-    Err("没找到运行中的桌宠：请先启动 codex-pet.exe".into())
+    Err("没找到运行中的桌宠：请先启动 alice-pet.exe".into())
 }

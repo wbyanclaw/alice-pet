@@ -1,14 +1,14 @@
 {
-  "name": "codex-pet",
+  "name": "alice-pet",
   "interface": {
-    "displayName": "Codex Pet"
+    "displayName": "Alice Pet"
   },
   "plugins": [
     {
-      "name": "codex-pet",
+      "name": "alice-pet",
       "source": {
         "source": "local",
-        "path": "./plugins/codex-pet"
+        "path": "./plugins/alice-pet"
       },
       "policy": {
         "installation": "AVAILABLE",

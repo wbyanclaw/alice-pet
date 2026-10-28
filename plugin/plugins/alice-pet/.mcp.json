@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "codex-pet": {
-      "command": "${CODEX_PET_EXE}",
+    "alice-pet": {
+      "command": "D:\\POC\\chatbot\\work\\alice-pet\\src-tauri\\target\\release\\alice-pet.exe",
       "args": ["--mcp"],
       "enabled": true,
       "default_tools_approval_mode": "approve",

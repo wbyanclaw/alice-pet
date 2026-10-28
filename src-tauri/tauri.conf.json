@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "codex-pet",
+  "productName": "alice-pet",
   "version": "0.1.0",
-  "identifier": "com.wbyanclaw.codexpet",
+  "identifier": "com.wbyanclaw.alicepet",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "pet",
-        "title": "codex-pet",
+        "title": "alice-pet",
         "width": 320,
         "height": 380,
         "decorations": false,

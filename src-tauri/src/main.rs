@@ -219,7 +219,7 @@ fn newest_session(root: &Path) -> Option<PathBuf> {
 }
 
 fn sessions_root() -> PathBuf {
-    if let Ok(custom) = std::env::var("CODEX_PET_SESSIONS") {
+    if let Ok(custom) = std::env::var("ALICE_PET_SESSIONS") {
         return PathBuf::from(custom);
     }
     let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\yan".into());
@@ -233,7 +233,7 @@ fn emit_state(app: &tauri::AppHandle, machine: &Shared, activity: Activity, deta
         m.set(activity, detail)
     };
     if let Some(state) = changed {
-        eprintln!("[codex-pet] -> {:?} ({})", state.activity, state.detail);
+        eprintln!("[alice-pet] -> {:?} ({})", state.activity, state.detail);
         let _ = app.emit("pet:state", state);
     }
 }
@@ -326,7 +326,7 @@ fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("PET_CONFIG") {
         return PathBuf::from(p);
     }
-    // 先找可执行文件同目录，再退到 %APPDATA%\codex-pet\pet.json
+    // 先找可执行文件同目录，再退到 %APPDATA%\alice-pet\pet.json
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         let local = dir.join("pet.json");
         if local.exists() {
@@ -340,7 +340,7 @@ fn config_path() -> PathBuf {
         }
     }
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(appdata).join("codex-pet").join("pet.json")
+    PathBuf::from(appdata).join("alice-pet").join("pet.json")
 }
 
 /// 读配置。文件不存在或坏掉时，字段级别的默认值要和 `default_config_value()` 一致——
@@ -418,7 +418,7 @@ fn endpoint_path() -> PathBuf {
         return PathBuf::from(p);
     }
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(appdata).join("codex-pet").join("endpoint.json")
+    PathBuf::from(appdata).join("alice-pet").join("endpoint.json")
 }
 
 fn write_endpoint(port: u16) {
@@ -428,7 +428,7 @@ fn write_endpoint(port: u16) {
     }
     let body = serde_json::json!({ "port": port, "pid": std::process::id() }).to_string();
     if let Err(e) = fs::write(&path, body) {
-        eprintln!("[codex-pet] 写 {} 失败：{e}", path.display());
+        eprintln!("[alice-pet] 写 {} 失败：{e}", path.display());
     }
 }
 
@@ -498,14 +498,14 @@ fn speak(app: &tauri::AppHandle, text: String) {
         let result = speak_sync(&tts, &spoken);
         let _ = handle.emit("pet:speaking", serde_json::json!({ "on": false }));
         if let Err(e) = result {
-            eprintln!("[codex-pet] 朗读失败：{e}");
+            eprintln!("[alice-pet] 朗读失败：{e}");
         }
     });
 }
 
 /// 同步朗读。出错把原因写到 stderr 和临时错误文件，界面上也会显示。
 fn speak_sync(cfg: &TtsConfig, text: &str) -> Result<(), String> {
-    let err_file = std::env::temp_dir().join("codex-pet-tts.err");
+    let err_file = std::env::temp_dir().join("alice-pet-tts.err");
     let _ = fs::remove_file(&err_file);
 
     // 本机 SAPI 是独立的一条路（不走云端）
@@ -536,7 +536,7 @@ $ErrorActionPreference = "Continue"
 $text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)
 if (-not $text -or -not $text.Trim()) { exit 0 }
 
-$errFile = Join-Path $env:TEMP "codex-pet-tts.err"
+$errFile = Join-Path $env:TEMP "alice-pet-tts.err"
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $picked = ""
@@ -562,7 +562,7 @@ if (-not $picked) {
 $s.Speak($text)
 "#;
 
-    let script = std::env::temp_dir().join("codex-pet-sapi.ps1");
+    let script = std::env::temp_dir().join("alice-pet-sapi.ps1");
     let current = fs::read_to_string(&script).unwrap_or_default();
     // 必须带 BOM 写入：PowerShell 5.1 对无 BOM 的脚本按 ANSI 解码，中文注释会吞掉
     // 后面的行（实测把下一行的赋值整行变成注释，脚本静默 exit 0，一点声音都没有）
@@ -572,7 +572,7 @@ $s.Speak($text)
     }
 
     let seq = TTS_SEQ.fetch_add(1, Ordering::Relaxed);
-    let text_file = std::env::temp_dir().join(format!("codex-pet-sapi-{}-{seq}.txt", std::process::id()));
+    let text_file = std::env::temp_dir().join(format!("alice-pet-sapi-{}-{seq}.txt", std::process::id()));
     fs::write(&text_file, text.as_bytes()).map_err(|e| format!("写临时文件失败：{e}"))?;
 
     let mut cmd = Command::new("powershell");
@@ -602,7 +602,7 @@ $s.Speak($text)
     let out = cmd.output().map_err(|e| format!("调 PowerShell 失败：{e}"))?;
     let _ = fs::remove_file(&text_file);
     if !out.status.success() {
-        let err = std::env::temp_dir().join("codex-pet-tts.err");
+        let err = std::env::temp_dir().join("alice-pet-tts.err");
         let msg = fs::read_to_string(&err).unwrap_or_default();
         return Err(if msg.trim().is_empty() {
             "本机朗读失败".into()
@@ -635,7 +635,7 @@ fn run_chat(app: tauri::AppHandle, machine: Shared, text: String) {
         cmd.env(k, v);
     }
     // stderr 落文件：失败时把最后几行贴进气泡，免得只能看“没有可显示的回复”
-    let err_path = std::env::temp_dir().join("codex-pet-agent.err");
+    let err_path = std::env::temp_dir().join("alice-pet-agent.err");
     if let Ok(f) = fs::File::create(&err_path) {
         cmd.stderr(Stdio::from(f));
     } else {
@@ -722,11 +722,11 @@ fn write_config(path: &Path, value: &Value) {
             // 先写临时文件再改名，避免写到一半断电/崩溃把配置留成半截
             let tmp = path.with_extension("json.tmp");
             if fs::write(&tmp, s).and_then(|_| fs::rename(&tmp, path)).is_err() {
-                eprintln!("[codex-pet] 写 {} 失败", path.display());
+                eprintln!("[alice-pet] 写 {} 失败", path.display());
                 let _ = fs::remove_file(&tmp);
             }
         }
-        Err(e) => eprintln!("[codex-pet] 序列化配置失败：{e}"),
+        Err(e) => eprintln!("[alice-pet] 序列化配置失败：{e}"),
     }
 }
 
@@ -1245,7 +1245,7 @@ fn pet_voice_start(app: tauri::AppHandle) -> Result<(), String> {
         .or_else(|| dshow_audio_device(&ffmpeg))
         .ok_or_else(|| format!("没找到麦克风（{ffmpeg} -list_devices 没返回 audio 设备）"))?;
 
-    let wav = std::env::temp_dir().join(format!("codex-pet-rec-{}.wav", std::process::id()));
+    let wav = std::env::temp_dir().join(format!("alice-pet-rec-{}.wav", std::process::id()));
     let _ = fs::remove_file(&wav);
 
     let mut cmd = Command::new(&ffmpeg);
@@ -1375,7 +1375,7 @@ fn configure_http(app: &tauri::AppHandle, machine: Shared) {
                     bound = Some((p, s));
                     break;
                 }
-                Err(e) => eprintln!("[codex-pet] http {addr} 不可用：{e}"),
+                Err(e) => eprintln!("[alice-pet] http {addr} 不可用：{e}"),
             }
         }
         let Some((port, server)) = bound else {
@@ -1383,7 +1383,7 @@ fn configure_http(app: &tauri::AppHandle, machine: Shared) {
             return;
         };
         write_endpoint(port);
-        eprintln!("[codex-pet] listening 127.0.0.1:{port}");
+        eprintln!("[alice-pet] listening 127.0.0.1:{port}");
         for mut req in server.incoming_requests() {
             let method = req.method().to_string();
             let url = req.url().to_string();
@@ -1457,7 +1457,7 @@ fn configure_tail(app: &tauri::AppHandle, machine: Shared) {
     let handle = app.clone();
     thread::spawn(move || {
         let root = sessions_root();
-        eprintln!("[codex-pet] watching {}", root.display());
+        eprintln!("[alice-pet] watching {}", root.display());
         let mut tailer = Tailer::new();
         loop {
             for ev in tailer.poll(&root) {
@@ -1466,7 +1466,7 @@ fn configure_tail(app: &tauri::AppHandle, machine: Shared) {
                     m.on_event(&ev)
                 };
                 if let Some(state) = changed {
-                    eprintln!("[codex-pet] -> {:?} ({})", state.activity, state.detail);
+                    eprintln!("[alice-pet] -> {:?} ({})", state.activity, state.detail);
                     let _ = handle.emit("pet:state", state);
                 }
             }
@@ -1475,7 +1475,7 @@ fn configure_tail(app: &tauri::AppHandle, machine: Shared) {
                 m.tick()
             };
             if let Some(state) = changed {
-                eprintln!("[codex-pet] -> {:?} ({})", state.activity, state.detail);
+                eprintln!("[alice-pet] -> {:?} ({})", state.activity, state.detail);
                 let _ = handle.emit("pet:state", state);
             }
             thread::sleep(POLL);
@@ -1569,7 +1569,7 @@ fn main() {
             setup_tray(&handle)?;
             // 热键被别人占了也不算致命，托盘和圆点仍能唤回
             if let Err(e) = app.global_shortcut().register(HOTKEY) {
-                eprintln!("[codex-pet] 注册热键 {HOTKEY} 失败：{e}");
+                eprintln!("[alice-pet] 注册热键 {HOTKEY} 失败：{e}");
             }
             configure_http(&handle, machine.clone());
             configure_tail(&handle, machine);
@@ -1593,7 +1593,7 @@ fn main() {
             pet_quit
         ])
         .run(tauri::generate_context!())
-        .expect("error while running codex-pet");
+        .expect("error while running alice-pet");
 }
 
 #[cfg(test)]
@@ -1658,7 +1658,7 @@ mod tests {
             .name()
             .unwrap_or("test")
             .replace("::", "_");
-        let p = std::env::temp_dir().join(format!("codex-pet-test-{name}.wav"));
+        let p = std::env::temp_dir().join(format!("alice-pet-test-{name}.wav"));
         fs::write(&p, b"RIFF----WAVEfmt ").expect("写测试 wav");
         p
     }
@@ -1811,7 +1811,7 @@ mod tests {
             .name()
             .unwrap_or("test")
             .replace("::", "_");
-        let path = std::env::temp_dir().join(format!("codex-pet-test-cfg-{name}.json"));
+        let path = std::env::temp_dir().join(format!("alice-pet-test-cfg-{name}.json"));
         let _ = fs::remove_file(&path);
         assert!(write_default_if_missing(&path), "文件不存在时应该写出来");
         let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

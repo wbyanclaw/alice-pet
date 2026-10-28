@@ -1,14 +1,37 @@
-# codex-pet
+# alice-pet
 
-Codex CLI 的桌面宠物：只读 `~/.codex/sessions/**/*.jsonl`，把会话事件映射成状态，用 4×4 雪碧播放动画。
+桌面宠物 alice：一个独立运行的桌面程序（Tauri 2），监听 Codex CLI 的会话日志
+`~/.codex/sessions/**/*.jsonl`，把会话事件映射成状态，用 4×4 雪碧播放动画。
 
-素材与 `dsh-workpet-alice` 同源（Mori `alice_half` 雪碧，MIT 授权），窗口 320×380（逻辑像素，可缩放 80%–120%）、透明、无边框、置顶、不进任务栏。
+窗口 320×380（逻辑像素，可缩放 80%–120%）、透明、无边框、置顶、不进任务栏。
+素材是 Mori 的 `alice_half` 雪碧（MIT 授权）。
+
+## 和 `dsh-workpet-alice` 的关系
+
+同一个角色、同一套美术素材，但**是完全独立的两个实现**，没有代码继承关系：
+
+| | `alice-pet`（本项目） | `dsh-workpet-alice` |
+|---|---|---|
+| 形态 | 独立桌面程序（Tauri 2 + Rust） | DeepSeek Harness 的 Cordis 插件（皮肤包） |
+| 依赖 | 不依赖 DSH，任何 agent 都能接 | 必须是 DSH 环境 |
+| 渲染 | 16 帧雪碧逐帧播放 + 状态机 | 100×80 SVG 框绘制 |
+| 接入 | MCP（stdio）/ HTTP 端点 | 走 DSH 的 `ctx.workpet` 能力契约 |
+| 语音 | 云端 TTS（可换厂商）+ 语音输入 | 无 |
+
+所以：
+
+- **名字里的 `dsh-workpet-` 是 DSH 插件市场的命名规范**，不能改——改了 `install_bundle dsh-workpet-alice`
+  就用不了了。DSH 用户请继续用 `dsh-workpet-alice`。
+- **本项目改名 `alice-pet`**，因为它服务的是「所有 agent」，不是 DSH 一家。
+- **美术素材同源同授权**（Mori `alice_half`，MIT），出处已在 LICENSE 里注明。
+
+两个项目是「同一个 alice 的两种形态」，**不是同一个软件的多个版本**，各装各的、互不干扰。
 
 ## 运行
 
 ```powershell
 cargo build --release --manifest-path src-tauri/Cargo.toml
-.\src-tauri\target\release\codex-pet.exe
+.\src-tauri\target\release\alice-pet.exe
 ```
 
 **必须用 release 运行**：debug 构建是 console 子系统，会带一个 cmd 窗口；release 是 GUI 子系统，不会出现控制台。
@@ -20,8 +43,8 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
 想换监听目录（例如用沙箱 CODEX_HOME）：
 
 ```powershell
-$env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
-.\src-tauri\target\release\codex-pet.exe
+$env:ALICE_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
+.\src-tauri\target\release\alice-pet.exe
 ```
 
 默认监听 `%USERPROFILE%\.codex\sessions`——也就是你自己 CLI 会话的日志，不是生图服务那份沙箱副本。
@@ -30,7 +53,7 @@ $env:CODEX_PET_SESSIONS = "d:\POC\chatbot\work\codex-home\sessions"
 
 ### 第一次跑需要知道的两件事
 
-1. **配置文件不在仓库里**。首次运行会在 `%APPDATA%\codex-pet\pet.json` 自动生成一份默认配置，
+1. **配置文件不在仓库里**。首次运行会在 `%APPDATA%\alice-pet\pet.json` 自动生成一份默认配置，
    界面里的「恢复默认」也是往这个文件写。想换位置就设 `PET_CONFIG` 环境变量。
 2. **语音朗读默认开着**，默认走云端 MiniMax TTS，需要系统环境变量里有 `MINIMAX_API_KEY`：
 
@@ -44,12 +67,12 @@ setx MINIMAX_API_KEY "sk-cp-..."
 ## 接自己的 agent（3 分钟）
 
 ```powershell
-git clone https://github.com/wbyanclaw/codex-pet.git
-cd codex-pet
+git clone https://github.com/wbyanclaw/alice-pet.git
+cd alice-pet
 .\clients\register-mcp.ps1 -Client codex        # 也可用 claude / codebuddy / dsh / trae / all
 ```
 
-脚本会编译 release 版、把 `clients/*.mcp.json` 里的 `${CODEX_PET_EXE}` 占位符换成
+脚本会编译 release 版、把 `clients/*.mcp.json` 里的 `${ALICE_PET_EXE}` 占位符换成
 你机器上的真实路径，然后写进对应 agent 的用户级配置。
 
 `-Client` 可选值：`codex`、`codex-app`、`claude`、`codebuddy`、`dsh`、`trae`、`qwenwork`、`all`。
@@ -59,8 +82,8 @@ cd codex-pet
 ```json
 {
   "mcpServers": {
-    "codex-pet": {
-      "command": "D:\\path\\to\\codex-pet.exe",
+    "alice-pet": {
+      "command": "D:\\path\\to\\alice-pet.exe",
       "args": ["--mcp"]
     }
   }
@@ -282,7 +305,7 @@ curl -X POST http://127.0.0.1:8765/say -d '{"text":"你好"}'
 PowerShell 5.1 会把长 `-Command` 字符串截断，导致 `Speak` 拿到空值并报 `0x20 音频设备错误`），
 文本经 UTF-8 临时文件传递，避开管道编码与引号问题。外部命令的输出在 Windows 上默认是
 GBK（重定向到管道时 `chcp` 不生效），代码按 GBK 兜底解码。合成/播放失败会把原因写到
-`%TEMP%\codex-pet-tts.err`。
+`%TEMP%\alice-pet-tts.err`。
 
 ## 设置窗口
 
@@ -304,7 +327,7 @@ GBK（重定向到管道时 `chcp` 不生效），代码按 GBK 兜底解码。�
 点宠物 → 底部出现输入框 → 回车发送。桌宠按 `pet.json` 里的命令模板执行一条 agent 命令，
 把 stdout 里能认出的文本逐行显示成气泡（流式追加），跑完再补一次 `done`。
 
-`pet.json` 查找顺序：`PET_CONFIG` 环境变量 → 可执行文件同目录 → `%APPDATA%\codex-pet\pet.json`。
+`pet.json` 查找顺序：`PET_CONFIG` 环境变量 → 可执行文件同目录 → `%APPDATA%\alice-pet\pet.json`。
 **这个文件不在仓库里**（含本机绝对路径，被 `.gitignore` 排除），首次运行自动生成一份默认配置：
 
 ```json
@@ -345,7 +368,7 @@ Codex 这类“每次起一个进程”的 agent，一问一答实测 38–64 �
 手动注册的话，Codex：
 
 ```powershell
-codex mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
+codex mcp add alice-pet -- "D:\path\to\alice-pet.exe" --mcp
 ```
 
 Codex 默认不放行 MCP 工具调用，会报
@@ -353,8 +376,8 @@ Codex 默认不放行 MCP 工具调用，会报
 里给这张表补一行（`codex mcp add` 不会写这个键）：
 
 ```toml
-[mcp_servers.codex-pet]
-command = 'D:\path\to\codex-pet.exe'
+[mcp_servers.alice-pet]
+command = 'D:\path\to\alice-pet.exe'
 args = ["--mcp"]
 default_tools_approval_mode = "approve"
 ```
@@ -362,7 +385,7 @@ default_tools_approval_mode = "approve"
 Claude Code：
 
 ```powershell
-claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
+claude mcp add alice-pet -- "D:\path\to\alice-pet.exe" --mcp
 ```
 
 暴露四个工具：
@@ -374,19 +397,19 @@ claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 | `pet_state` | 读当前姿态与最近一次事件 |
 | `pet_speak` | 让它把这句话念出来（走设置里配的语音服务，失败回退 SAPI），与 `pet_say` 的区别是只出声 |
 
-工具调用会转发给**正在运行的桌宠**，端口从 `%APPDATA%\codex-pet\endpoint.json` 读——
+工具调用会转发给**正在运行的桌宠**，端口从 `%APPDATA%\alice-pet\endpoint.json` 读——
 端口冲突自动顺延（8765→8774），重开桌宠也不用改任何 agent 配置。
 
 ### 各家 agent 注册对照表
 
 同一个 exe、同一份 `{"command": "<exe>", "args": ["--mcp"]}`，只是各家的配置文件放法不同。
-模板在 `clients/`（Codex App 用 `plugin/` 的插件三件套），`${CODEX_PET_EXE}` 是占位符——
+模板在 `clients/`（Codex App 用 `plugin/` 的插件三件套），`${ALICE_PET_EXE}` 是占位符——
 跑 `register-mcp.ps1` 会自动替换成你机器上的真实路径。
 
 | agent | 放哪儿 | 注册方式 | 审批粒度 |
 |---|---|---|---|
-| **Codex App** | `~/.codex/config.toml` 加 `[marketplaces.codex-pet]` + `[plugins."codex-pet@codex-pet"]`，指向 `plugin/` | `-Client codex-app`，重启 App 生效 | 支持逐工具 |
-| **Codex CLI** | `[mcp_servers.codex-pet]` | `-Client codex` | 支持逐工具 |
+| **Codex App** | `~/.codex/config.toml` 加 `[marketplaces.alice-pet]` + `[plugins."alice-pet@alice-pet"]`，指向 `plugin/` | `-Client codex-app`，重启 App 生效 | 支持逐工具 |
+| **Codex CLI** | `[mcp_servers.alice-pet]` | `-Client codex` | 支持逐工具 |
 | **Claude Code** | `~/.claude.json`（`claude mcp add --scope user`） | `-Client claude` | `permissions.allow` 白名单 |
 | **CodeBuddy / WorkBuddy** | 用户级 `~/.codebuddy/.mcp.json`；桌面版走 MCP 面板 | `-Client codebuddy` | 无 |
 | **DSH**（DeepSeek Harness） | Claude 风格 mcp 配置，或装 `dsh-mcp-bridge` | `-Client dsh` | 无 |
@@ -395,14 +418,14 @@ claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 | **豆包工作** | 插件·技能·伙伴 → 插件 → + 添加 → 新建自定义插件 | 手动填表，无 JSON | 无 |
 | **任意脚本 / CI** | `POST 127.0.0.1:<port>/event` 等 6 个 HTTP 端点 | 见下一节 | — |
 
-豆包和千问办公的表单字段一样：**传输类型 STDIO**、服务器名称 `codex-pet`、
-运行命令 = 你机器上的 `codex-pet.exe` 完整路径、参数 = `--mcp`。
+豆包和千问办公的表单字段一样：**传输类型 STDIO**、服务器名称 `alice-pet`、
+运行命令 = 你机器上的 `alice-pet.exe` 完整路径、参数 = `--mcp`。
 
 审批策略（目前只有 Codex 和 Claude Code 支持逐工具配）：
 
 - `pet_state` / `pet_gesture` 自动放行 —— Codex 插件里 `default_tools_approval_mode = "approve"`；
   Claude Code 在 `~/.claude/settings.json` 的 `permissions.allow` 里放了
-  `mcp__codex-pet__pet_state`、`mcp__codex-pet__pet_gesture`。
+  `mcp__alice-pet__pet_state`、`mcp__alice-pet__pet_gesture`。
 - `pet_say` / `pet_speak` 每次确认 —— 插件 `.mcp.json` 里这两个工具单独写了 `approval_mode = "prompt"`。
 - 其它客户端没有逐工具开关，默认都是"每次问"。
 
@@ -414,7 +437,7 @@ claude mcp add codex-pet -- "D:\path\to\codex-pet.exe" --mcp
 ## 自定义 agent 接入（本地 HTTP）
 
 桌宠在 `127.0.0.1:8765`（端口被占会自动顺延到 8774，真实端口写在
-`%APPDATA%\codex-pet\endpoint.json`）开了 6 个端点，只绑本机：
+`%APPDATA%\alice-pet\endpoint.json`）开了 6 个端点，只绑本机：
 
 ```powershell
 # 推状态（驱动动画）：idle/sleeping/thinking/writing/tool/done/error
@@ -461,9 +484,9 @@ clients/register-mcp.ps1 一键注册脚本：编译 + 填路径 + 写各家 age
 
 | 文件 | 位置 | 内容 |
 |---|---|---|
-| `pet.json` | `%APPDATA%\codex-pet\`（或 exe 同目录） | 端口、chat 命令模板、语音开关、tts/asr、缩放、置顶 |
-| `endpoint.json` | `%APPDATA%\codex-pet\` | 桌宠实际监听的端口（MCP 子进程靠它找桌宠） |
-| `codex-pet-play.ps1` / `codex-pet-sapi.ps1` | `%TEMP%` | 播放 / SAPI 朗读的辅助脚本（自动生成） |
+| `pet.json` | `%APPDATA%\alice-pet\`（或 exe 同目录） | 端口、chat 命令模板、语音开关、tts/asr、缩放、置顶 |
+| `endpoint.json` | `%APPDATA%\alice-pet\` | 桌宠实际监听的端口（MCP 子进程靠它找桌宠） |
+| `alice-pet-play.ps1` / `alice-pet-sapi.ps1` | `%TEMP%` | 播放 / SAPI 朗读的辅助脚本（自动生成） |
 
 ## 已知限制
 
