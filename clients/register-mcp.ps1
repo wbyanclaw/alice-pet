@@ -25,7 +25,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+# 仓库里是 src-tauri\target\release\，发布包里 exe 就在脚本旁边——
+# 两个位置都认，脚本才能同时在仓库和发布包里用。
 $exe = Join-Path $repo "src-tauri\target\release\codex-pet.exe"
+if (-not (Test-Path $exe)) {
+    $exe = Join-Path $repo "codex-pet.exe"
+}
 
 function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok([string]$msg) { Write-Host "    $msg" -ForegroundColor Green }
@@ -33,13 +38,18 @@ function Write-Warn([string]$msg) { Write-Host "    $msg" -ForegroundColor Yello
 
 # ---- 1. 编译 ----
 if (-not $SkipBuild) {
-    Write-Step "编译 release 版"
-    Push-Location (Join-Path $repo "src-tauri")
-    try {
-        cargo build --release
-        if ($LASTEXITCODE -ne 0) { throw "cargo build 失败" }
-    } finally {
-        Pop-Location
+    $srcDir = Join-Path $repo "src-tauri"
+    if (Test-Path (Join-Path $srcDir "Cargo.toml")) {
+        Write-Step "编译 release 版"
+        Push-Location $srcDir
+        try {
+            cargo build --release
+            if ($LASTEXITCODE -ne 0) { throw "cargo build 失败" }
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Step "发布包里没有源码，跳过编译"
     }
 }
 

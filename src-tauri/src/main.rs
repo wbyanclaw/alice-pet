@@ -730,6 +730,17 @@ fn write_config(path: &Path, value: &Value) {
     }
 }
 
+/// 首次运行时把出厂默认写进 pet.json。没有这个文件桌宠照样能跑
+/// （读配置时回退默认值），但写出来用户才知道有哪些可改项。
+/// 返回 true 表示这次真的写了。
+fn write_default_if_missing(path: &Path) -> bool {
+    if path.exists() {
+        return false;
+    }
+    write_config(path, &default_config_value());
+    true
+}
+
 fn save_voice(enabled: bool) {
     patch_config("voice", Value::Bool(enabled));
 }
@@ -1545,6 +1556,8 @@ fn main() {
             // 语音开关、缩放、置顶都跟着配置走
             let cfg = load_config();
             VOICE.store(cfg.voice.unwrap_or(true), Ordering::Relaxed);
+            // 首次运行：把出厂默认写出来，用户能看到配置长什么样
+            write_default_if_missing(&config_path());
             // 先按配置把窗口尺寸调好，再贴到右下角，位置才准
             apply_scale(&handle, cfg.scale.unwrap_or(1.0));
             if !cfg.always_on_top.unwrap_or(true) {
@@ -1790,5 +1803,28 @@ mod tests {
         let mut next = serde_json::json!({ "tts": { "api_key": "" } });
         merge_secret(&mut next, Some(&old), "tts");
         assert_eq!(next["tts"]["api_key"], "");
+    }
+
+    #[test]
+    fn 首次运行会写出默认配置但不覆盖已有的() {
+        let name = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace("::", "_");
+        let path = std::env::temp_dir().join(format!("codex-pet-test-cfg-{name}.json"));
+        let _ = fs::remove_file(&path);
+        assert!(write_default_if_missing(&path), "文件不存在时应该写出来");
+        let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["tts"]["provider"], "minimax");
+        assert_eq!(v["asr"]["provider"], "whisper");
+
+        // 已经有文件了就一个字都不能动
+        let mut edited: Value = v.clone();
+        edited["port"] = serde_json::json!(9999);
+        fs::write(&path, serde_json::to_string_pretty(&edited).unwrap()).unwrap();
+        assert!(!write_default_if_missing(&path), "已有文件时不该再写");
+        let v2: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v2["port"], 9999);
+        let _ = fs::remove_file(&path);
     }
 }
